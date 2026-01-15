@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Source2Surf/Timer
  * Copyright (C) 2025 Nukoooo and Kxnrl
  *
@@ -38,7 +38,7 @@ internal class PlayerFrameData
     public bool GrabbingPostFrame { get; set; } = false;
     public bool IsSavingReplay    { get; set; } = false;
 
-    public List<ReplayFrameData> Frames { get; init; } = [];
+    public ReplayFrameBuffer Frames { get; set; } = [];
 
     public Guid? PostFrameTimer      { get; set; } = null;
     public Guid? StagePostFrameTimer { get; set; } = null;

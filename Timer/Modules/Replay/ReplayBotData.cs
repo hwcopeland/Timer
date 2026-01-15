@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Source2Surf/Timer
  * Copyright (C) 2025 Nukoooo and Kxnrl
  *
@@ -14,8 +14,9 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
- 
+
 using System;
+using System.Collections.Generic;
 using Sharp.Shared.GameEntities;
 using Sharp.Shared.Objects;
 using Sharp.Shared.Units;
@@ -45,8 +46,8 @@ internal class ReplayBotData
 
     public ReplayFileHeader? Header { get; set; } = null;
 
-    public ReplayFrameData[] Frames       { get; set; } = [];
-    public int               CurrentFrame { get; set; }
+    public IReadOnlyList<ReplayFrameData> Frames       { get; set; } = [];
+    public int                            CurrentFrame { get; set; }
 
     public EReplayBotStatus Status { get; set; }  = EReplayBotStatus.Idle;
 

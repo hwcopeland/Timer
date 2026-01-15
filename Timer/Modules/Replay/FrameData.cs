@@ -39,8 +39,8 @@ internal record ReplayFileHeader
 
 internal record ReplayContent
 {
-    public required ReplayFileHeader  Header { get; init; }
-    public required ReplayFrameData[] Frames { get; init; }
+    public required ReplayFileHeader              Header { get; init; }
+    public required IReadOnlyList<ReplayFrameData> Frames { get; init; }
 }
 
 [MemoryPackable]

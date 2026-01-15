@@ -16,6 +16,10 @@
  */
 
 using System;
+using System.Buffers;
+using System.Collections;
+using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -40,22 +44,215 @@ namespace Source2Surf.Timer.Modules;
 
 internal partial class ReplayModule
 {
+    private bool TryGetFrameData(PlayerSlot slot, [NotNullWhen(true)] out PlayerFrameData? frameData)
+    {
+        frameData = _playerFrameData[slot];
+
+        return frameData is not null;
+    }
+
+    private bool TryGetStageStartTick(PlayerFrameData frameData, int stageIndex, out int startTick)
+    {
+        if (stageIndex < frameData.StageTimerStartTicks.Count)
+        {
+            startTick = frameData.StageTimerStartTicks[stageIndex];
+
+            return true;
+        }
+
+        startTick = 0;
+
+        _logger.LogWarning("Stage start tick missing for stage index {StageIndex}. Current count: {Count}",
+                           stageIndex,
+                           frameData.StageTimerStartTicks.Count);
+
+        return false;
+    }
+
+    private void SetStageTimerStart(PlayerFrameData frameData, int stageIndex, int currentFrame, int stageNumber)
+    {
+        var ticksList = frameData.StageTimerStartTicks;
+        var count     = ticksList.Count;
+
+        if (count == stageIndex)
+        {
+            ticksList.Add(currentFrame);
+
+            return;
+        }
+
+        if (stageIndex < count)
+        {
+            ticksList[stageIndex] = currentFrame;
+
+            return;
+        }
+
+        using var scope = _logger.BeginScope("OnPlayerStageTimerStart");
+
+        _logger.LogError("Attempted to add CurrentFrame to StageTimerStartTick for stage {Stage} (index {Index}) "
+                         + "when current stage count is {Count}. Probable logic error elsewhere.",
+                         stageNumber,
+                         stageIndex,
+                         count);
+    }
+
+    private void StopTimerAndNotifySaving(IPlayerController controller, PlayerSlot slot)
+    {
+        _bridge.ModSharp.InvokeFrameAction(() =>
+        {
+            _timerModule.StopTimer(slot);
+            controller.PrintToChat("Timer stopped: Replay is saving.");
+        });
+    }
+
+    private string BuildMainReplayPath(int style, int track, Guid? runId)
+    {
+        var fileName = runId is null
+            ? $"{_bridge.GlobalVars.MapName}_{track}.replay.{Guid.NewGuid()}"
+            : $"{_bridge.GlobalVars.MapName}_{track}_{runId.Value}.replay";
+
+        return Path.Combine(_replayDirectory,
+                            $"style_{style}",
+                            fileName);
+    }
+
+    private string BuildStageReplayPath(int style, int track, int stage, Guid? runId = null)
+    {
+        var fileName = runId is null
+            ? $"{_bridge.GlobalVars.MapName}_{track}_{stage}.replay.{Guid.NewGuid()}"
+            : $"{_bridge.GlobalVars.MapName}_{track}_{stage}_{runId.Value}.replay";
+
+        return Path.Combine(_replayDirectory,
+                            $"style_{style}",
+                            "stage",
+                            fileName);
+    }
+
+    private readonly record struct ReplaySaveSnapshot(ReplayFileHeader Header, IReadOnlyList<ReplayFrameData> Frames);
+
+    private sealed class ReplayFrameSlice : IReadOnlyList<ReplayFrameData>
+    {
+        private readonly IReadOnlyList<ReplayFrameData> _source;
+        private readonly int                            _offset;
+        private readonly int                            _count;
+
+        public ReplayFrameSlice(IReadOnlyList<ReplayFrameData> source, int offset, int count)
+        {
+            _source = source;
+            _offset = offset;
+            _count  = count;
+        }
+
+        public int Count => _count;
+
+        public ReplayFrameData this[int index]
+        {
+            get
+            {
+                if ((uint) index >= (uint) _count)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(index));
+                }
+
+                return _source[_offset + index];
+            }
+        }
+
+        public IEnumerator<ReplayFrameData> GetEnumerator()
+        {
+            for (var i = 0; i < _count; i++)
+            {
+                yield return _source[_offset + i];
+            }
+        }
+
+        IEnumerator IEnumerable.GetEnumerator()
+            => GetEnumerator();
+    }
+
+    private static ReplaySaveSnapshot CreateMainReplaySnapshot(PlayerFrameData frame)
+    {
+        var framesBuffer = frame.Frames;
+
+        frame.Frames = new ReplayFrameBuffer(Utils.Tickrate * 60 * 5);
+
+        var header = new ReplayFileHeader
+        {
+            SteamId     = frame.SteamId,
+            TotalFrames = framesBuffer.Count,
+            PreFrame    = frame.TimerStartFrame,
+            PostFrame   = frame.TimerFinishFrame,
+            Time        = frame.FinishTime,
+            StageTicks  = [..frame.NewStageTicks],
+            PlayerName  = frame.Name,
+        };
+
+        frame.NewStageTicks.Clear();
+        frame.StageTimerStartTicks.Clear();
+        frame.TimerStartFrame  = 0;
+        frame.TimerFinishFrame = 0;
+        frame.FinishTime       = 0;
+
+        return new ReplaySaveSnapshot(header, framesBuffer);
+    }
+
+    private static ReplaySaveSnapshot CreateStageReplaySnapshot(PlayerFrameData frame,
+                                                                int             startTick,
+                                                                int             stageStartFrame,
+                                                                int             stageFinishFrame,
+                                                                int             postRunFrameCount,
+                                                                float           finishTime)
+    {
+        var finalFrame = Math.Min(frame.Frames.Count, stageFinishFrame + postRunFrameCount);
+        var length     = Math.Max(0, finalFrame                        - startTick);
+
+        IReadOnlyList<ReplayFrameData> framesToWrite = length == 0
+            ? []
+            : new ReplayFrameSlice(frame.Frames, startTick, length);
+
+        var header = new ReplayFileHeader
+        {
+            SteamId     = frame.SteamId,
+            TotalFrames = framesToWrite.Count,
+            PreFrame    = stageStartFrame  - startTick,
+            PostFrame   = stageFinishFrame - startTick,
+            Time        = finishTime,
+            PlayerName  = frame.Name,
+        };
+
+        return new ReplaySaveSnapshot(header, framesToWrite);
+    }
+
+    private static void TrimPreRunFrames(PlayerFrameData frameData, int maxPreFrame)
+    {
+        if (maxPreFrame <= 0)
+        {
+            frameData.Frames.Clear();
+
+            return;
+        }
+
+        var excess = frameData.Frames.Count - maxPreFrame;
+
+        if (excess > 0)
+        {
+            frameData.Frames.RemoveOldest(excess);
+        }
+    }
+
     private void OnTimerStart(IPlayerController controller, IPlayerPawn pawn, ITimerInfo timerInfo)
     {
         var slot = controller.PlayerSlot;
 
-        if (_playerFrameData[slot] is not { } frameData)
+        if (!TryGetFrameData(slot, out var frameData))
         {
             return;
         }
 
         if (frameData.IsSavingReplay)
         {
-            _bridge.ModSharp.InvokeFrameAction(() =>
-            {
-                _timerModule.StopTimer(slot);
-                controller.PrintToChat("Timer stopped: Replay is saving.");
-            });
+            StopTimerAndNotifySaving(controller, slot);
 
             return;
         }
@@ -72,23 +269,13 @@ internal partial class ReplayModule
 
             frameData.PostFrameTimer = null;
 
-            _bridge.ModSharp.InvokeFrameAction(() =>
-            {
-                _timerModule.StopTimer(slot);
-                controller.PrintToChat("Timer stopped: Replay is saving.");
-            });
+            StopTimerAndNotifySaving(controller, slot);
 
             return;
         }
 
-        var maxPreFrmae = (int) (timer_replay_prerun_time.GetFloat() * Utils.Tickrate);
-
-        var delta = frameData.Frames.Count - maxPreFrmae;
-
-        if (delta > 0)
-        {
-            frameData.Frames.RemoveRange(0, delta);
-        }
+        var maxPreFrame = (int) (timer_replay_prerun_time.GetFloat() * Utils.Tickrate);
+        TrimPreRunFrames(frameData, maxPreFrame);
 
         frameData.NewStageTicks.Clear();
         frameData.StageTimerStartTicks.Clear();
@@ -102,7 +289,7 @@ internal partial class ReplayModule
     {
         var slot = controller.PlayerSlot;
 
-        if (_playerFrameData[slot] is not { } frameData)
+        if (!TryGetFrameData(slot, out var frameData))
         {
             return;
         }
@@ -110,27 +297,7 @@ internal partial class ReplayModule
         var stage = timerInfo.Stage;
         var idx   = stage - 1;
 
-        var ticksList = frameData.StageTimerStartTicks;
-        var count     = ticksList.Count;
-
-        if (count == idx)
-        {
-            ticksList.Add(frameData.Frames.Count);
-        }
-        else if (idx < count)
-        {
-            ticksList[idx] = frameData.Frames.Count;
-        }
-        else
-        {
-            using var scope = _logger.BeginScope("OnPlayerStageTimerStart");
-
-            _logger.LogError("Attempted to add CurrentFrame to StageTimerStartTick for stage {Stage} (index {Index}) "
-                             + "when current stage count is {Count}. Probable logic error elsewhere.",
-                             stage,
-                             idx,
-                             count);
-        }
+        SetStageTimerStart(frameData, idx, frameData.Frames.Count, stage);
     }
 
     private void OnPlayerStageTimerFinish(IPlayerController controller,
@@ -139,7 +306,7 @@ internal partial class ReplayModule
     {
         var slot = controller.PlayerSlot;
 
-        if (_playerFrameData[slot] is not { } frame)
+        if (!TryGetFrameData(slot, out var frame))
         {
             return;
         }
@@ -151,11 +318,15 @@ internal partial class ReplayModule
 
         var lastStage = finishedStage - 1;
 
+        if (!TryGetStageStartTick(frame, lastStage, out var timerStartTick))
+        {
+            return;
+        }
+
         var time = timerInfo.Time;
 
         _bridge.ModSharp.InvokeFrameAction(() =>
         {
-            var timerStartTick = frame.StageTimerStartTicks[lastStage];
             var newStageTicks  = frame.NewStageTicks[lastStage];
 
             var delay              = timer_replay_stage_postrun_time.GetFloat();
@@ -195,7 +366,7 @@ internal partial class ReplayModule
     {
         var slot = controller.PlayerSlot;
 
-        if (_playerFrameData[slot] is not { } frame)
+        if (!TryGetFrameData(slot, out var frame))
         {
             return;
         }
@@ -321,15 +492,33 @@ internal partial class ReplayModule
         }
     }
 
-    private async Task<bool> WriteReplayToFile(ReplayFileHeader header, string path, ReplayFrameData[] framesToWrite)
+    private async Task<bool> WriteReplayToFile(ReplayFileHeader               header,
+                                               string                         path,
+                                               IReadOnlyList<ReplayFrameData> framesToWrite)
     {
         try
         {
             await using var fileStream
                 = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 4096, true);
 
-            await JsonSerializer.SerializeAsync(fileStream, header);
-            await fileStream.WriteAsync(HeaderFrameSeparatorBytes);
+            var headerBuffer = ArrayPool<byte>.Shared.Rent(4096);
+
+            try
+            {
+                using var       memoryStream = new MemoryStream(headerBuffer);
+                await using var jsonWriter   = new Utf8JsonWriter(memoryStream);
+
+                JsonSerializer.Serialize(jsonWriter, header);
+
+                await jsonWriter.FlushAsync();
+
+                await fileStream.WriteAsync(new ReadOnlyMemory<byte>(headerBuffer, 0, (int) memoryStream.Position));
+                await fileStream.WriteAsync(HeaderFrameSeparatorBytes);
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(headerBuffer);
+            }
 
             var compressionLevel = Math.Max(timer_replay_file_compression_level.GetInt32(), 1);
 
@@ -338,7 +527,35 @@ internal partial class ReplayModule
             compressionStream.SetParameter(ZSTD_cParameter.ZSTD_c_nbWorkers,
                                            Math.Max(timer_replay_file_compression_workers.GetInt32(), ProcessorCount));
 
-            await MemoryPackSerializer.SerializeAsync(compressionStream, framesToWrite);
+            switch (framesToWrite)
+            {
+                case ReplayFrameData[] arr:
+                    await MemoryPackSerializer.SerializeAsync(compressionStream, arr);
+
+                    break;
+                case List<ReplayFrameData> list:
+                    await MemoryPackSerializer.SerializeAsync(compressionStream, list);
+
+                    break;
+                default:
+                    var rented = ArrayPool<ReplayFrameData>.Shared.Rent(framesToWrite.Count);
+
+                    try
+                    {
+                        for (var i = 0; i < framesToWrite.Count; i++)
+                        {
+                            rented[i] = framesToWrite[i];
+                        }
+
+                        await MemoryPackSerializer.SerializeAsync(compressionStream, rented.AsMemory(0, framesToWrite.Count));
+                    }
+                    finally
+                    {
+                        ArrayPool<ReplayFrameData>.Shared.Return(rented);
+                    }
+
+                    break;
+            }
         }
         catch (Exception e)
         {
@@ -366,40 +583,27 @@ internal partial class ReplayModule
         }
 
         frame.IsSavingReplay = true;
-        var style = frame.Style;
-        var track = frame.Track;
+        var style    = frame.Style;
+        var track    = frame.Track;
+        var snapshot = CreateMainReplaySnapshot(frame);
 
         string path;
 
         if (frame.PendingMainRunId is { } runId)
         {
-            path = Path.Combine(_replayDirectory,
-                                $"style_{style}",
-                                $"{_bridge.GlobalVars.MapName}_{track}_{runId}.replay");
+            path = BuildMainReplayPath(style, track, runId);
 
             frame.PendingMainRunId = null;
         }
         else
         {
-            path = Path.Combine(_replayDirectory,
-                                $"style_{style}",
-                                $"{_bridge.GlobalVars.MapName}_{track}.replay.{Guid.NewGuid()}");
+            path = BuildMainReplayPath(style, track, null);
         }
 
         Task.Run(async () =>
         {
-            var framesToWrite = frame.Frames.ToArray();
-
-            var header = new ReplayFileHeader
-            {
-                SteamId     = frame.SteamId,
-                TotalFrames = framesToWrite.Length,
-                PreFrame    = frame.TimerStartFrame,
-                PostFrame   = frame.TimerFinishFrame,
-                Time        = frame.FinishTime,
-                StageTicks  = frame.NewStageTicks,
-                PlayerName  = frame.Name,
-            };
+            var header        = snapshot.Header;
+            var framesToWrite = snapshot.Frames;
 
             try
             {
@@ -429,12 +633,14 @@ internal partial class ReplayModule
             finally
             {
                 frame.IsSavingReplay = false;
-                ClearFrame(slot);
             }
         });
     }
 
-    private async Task StartNewReplay(ReplayFileHeader header, ReplayFrameData[] framesToWrite, int style, int track)
+    private async Task StartNewReplay(ReplayFileHeader               header,
+                                      IReadOnlyList<ReplayFrameData> framesToWrite,
+                                      int                            style,
+                                      int                            track)
     {
         if (_replayCache.TryGetValue((style, track), out var cache) && cache.Header.Time <= header.Time)
         {
@@ -449,81 +655,72 @@ internal partial class ReplayModule
 
         _replayCache[(style, track)] = replayContent;
 
-        await _bridge.ModSharp.InvokeFrameActionAsync(() =>
-        {
-            foreach (var bot in _replayBots.FindAll(i => (i.Style    == style || i.Style < 0)
-                                                         && (i.Track == track || i.Track < 0)
-                                                         && i.Config.StageBot == false))
-            {
-                bot.Frames = replayContent.Frames;
-                bot.Header = header;
-                StartReplay(bot);
-            }
-        });
+        await _bridge.ModSharp.InvokeFrameActionAsync(() => { UpdateMainReplayBots(style, track, replayContent); });
     }
 
     private void SaveStageReplayToFile(PlayerFrameData frame,
                                        int             startTick,
                                        int             stageStartFrame,
-                                       int             stageFinsihFrame,
+                                       int             stageFinishFrame,
                                        int             postRunFrameCount,
                                        int             stage,
                                        float           finishTime)
     {
         frame.StagePostFrameTimer = null;
 
-        var path = Path.Combine(_replayDirectory,
-                                $"style_{frame.Style}",
-                                "stage",
-                                $"{_bridge.GlobalVars.MapName}_{frame.Track}_{stage}.replay.{Guid.NewGuid()}");
+        var style = frame.Style;
+        var track = frame.Track;
+
+        Guid? pathRunId = frame.PendingStageRunIds.TryGetValue(stage, out var pendingRunId)
+            ? pendingRunId
+            : null;
+
+        if (pathRunId is not null)
+        {
+            frame.PendingStageRunIds.Remove(stage);
+        }
+
+        var path = BuildStageReplayPath(style, track, stage, pathRunId);
+
+        var (header, framesToWrite) = CreateStageReplaySnapshot(frame,
+                                                                startTick,
+                                                                stageStartFrame,
+                                                                stageFinishFrame,
+                                                                postRunFrameCount,
+                                                                finishTime);
 
         Task.Run(async () =>
         {
-            var finalFrame = Math.Min(frame.Frames.Count, stageFinsihFrame + postRunFrameCount);
-
-            var framesToWrite = frame.Frames[startTick..finalFrame].ToArray();
-
-            var header = new ReplayFileHeader
-            {
-                SteamId     = frame.SteamId,
-                TotalFrames = framesToWrite.Length,
-                PreFrame    = stageStartFrame  - startTick,
-                PostFrame   = stageFinsihFrame - startTick,
-                Time        = finishTime,
-                PlayerName  = frame.Name,
-            };
-
             // timer_path/replays/style_id/stage/mapname_tracknum_stagenum.replay
 
             try
             {
                 if (await WriteReplayToFile(header, path, framesToWrite).ConfigureAwait(false))
                 {
-                    if (_stageReplayCache.TryGetValue((frame.Style, frame.Track, stage), out var cache)
+                    if (pathRunId is null)
+                    {
+                        frame.SavedStageReplayPaths[stage] = path;
+                    }
+
+                    var cacheKey = (style, track, stage);
+
+                    if (_stageReplayCache.TryGetValue(cacheKey, out var cache)
                         && cache.Header.Time <= header.Time)
                     {
                         return;
                     }
 
-                    _stageReplayCache[(frame.Style, frame.Track, stage)] = new ()
-                    {
-                        Frames = framesToWrite,
-                        Header = header,
-                    };
+                    _stageReplayCache[cacheKey] = new () { Frames = framesToWrite, Header = header };
 
                     await _bridge.ModSharp.InvokeFrameActionAsync(() =>
-                    {
-                        foreach (var bot in _replayBots.FindAll(i => (i.Style    == frame.Style || i.Style < 0)
-                                                                     && (i.Track == frame.Track || i.Track < 0)
-                                                                     && i.Config.StageBot
-                                                                     && i.Stage == stage))
-                        {
-                            bot.Frames = framesToWrite;
-                            bot.Header = header;
-                            bot.Stage  = stage;
-                            StartReplay(bot);
-                        }
-                    }).ConfigureAwait(false);
+                                 {
+                                     UpdateStageReplayBots(style,
+                                                           track,
+                                                           stage,
+                                                           framesToWrite,
+                                                           header);
+                                 })
+                                 .ConfigureAwait(false);
                 }
             }
             catch (Exception e)
@@ -532,6 +729,52 @@ internal partial class ReplayModule
             }
         });
     }
+
+    private void UpdateMainReplayBots(int style, int track, ReplayContent replayContent)
+    {
+        foreach (var bot in _replayBots)
+        {
+            if (!IsMainReplayBotMatch(bot, style, track))
+            {
+                continue;
+            }
+
+            bot.Frames = replayContent.Frames;
+            bot.Header = replayContent.Header;
+            StartReplay(bot);
+        }
+    }
+
+    private void UpdateStageReplayBots(int                            style,
+                                       int                            track,
+                                       int                            stage,
+                                       IReadOnlyList<ReplayFrameData> framesToWrite,
+                                       ReplayFileHeader               header)
+    {
+        foreach (var bot in _replayBots)
+        {
+            if (!IsStageReplayBotMatch(bot, style, track, stage))
+            {
+                continue;
+            }
+
+            bot.Frames = framesToWrite;
+            bot.Header = header;
+            bot.Stage  = stage;
+            StartReplay(bot);
+        }
+    }
+
+    private static bool IsMainReplayBotMatch(ReplayBotData bot, int style, int track)
+        => (bot.Style    == style || bot.Style < 0)
+           && (bot.Track == track || bot.Track < 0)
+           && !bot.Config.StageBot;
+
+    private static bool IsStageReplayBotMatch(ReplayBotData bot, int style, int track, int stage)
+        => (bot.Style    == style || bot.Style < 0)
+           && (bot.Track == track || bot.Track < 0)
+           && bot.Config.StageBot
+           && bot.Stage == stage;
 
     private void OnPlayerRunCommandPost(IPlayerRunCommandHookParams arg, HookReturnValue<EmptyHookReturn> hook)
     {
@@ -551,7 +794,7 @@ internal partial class ReplayModule
 
         var slot = client.Slot;
 
-        if (_playerFrameData[slot] is not { } frameData)
+        if (!TryGetFrameData(slot, out var frameData))
         {
             return;
         }
@@ -559,7 +802,7 @@ internal partial class ReplayModule
         var angles  = pawn.GetEyeAngles();
         var service = arg.Service;
 
-        var frame = new ReplayFrameData
+        frameData.Frames.Add(new ()
         {
             Origin         = pawn.GetAbsOrigin(),
             Angles         = new (angles.X, angles.Y),
@@ -568,8 +811,6 @@ internal partial class ReplayModule
             ScrollButtons  = service.ScrollButtons,
             MoveType       = pawn.MoveType,
             Velocity       = pawn.GetAbsVelocity(),
-        };
-
-        frameData.Frames.Add(frame);
+        });
     }
 }

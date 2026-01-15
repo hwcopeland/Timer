@@ -64,8 +64,9 @@ internal partial class ReplayModule : IReplayModule, IModule, IGameListener, IEn
     private readonly Dictionary<(int style, int track), ReplayContent>            _replayCache      = [];
     private readonly Dictionary<(int style, int track, int stage), ReplayContent> _stageReplayCache = [];
 
-    private readonly List<ReplayBotData> _replayBots       = [];
-    private          ReplayBotConfig[]   _replayBotConfigs = [];
+    private readonly List<ReplayBotData>  _replayBots       = [];
+    private readonly ReplayBotData?[]     _replayBotBySlot;
+    private          ReplayBotConfig[]    _replayBotConfigs = [];
 
     private static          bool _expectingBot;
     private static readonly int  ProcessorCount = Environment.ProcessorCount;
@@ -141,6 +142,7 @@ internal partial class ReplayModule : IReplayModule, IModule, IGameListener, IEn
         }
 
         _playerFrameData = Enumerable.Repeat<PlayerFrameData?>(null, PlayerSlot.MaxPlayerSlot).ToArray();
+        _replayBotBySlot = new ReplayBotData?[PlayerSlot.MaxPlayerSlot];
 
         _replayDirectory  = Path.Combine(bridge.TimerDataPath, "replays");
         _replayConfigPath = Path.Combine(bridge.TimerDataPath, "replay.jsonc");
@@ -233,6 +235,7 @@ internal partial class ReplayModule : IReplayModule, IModule, IGameListener, IEn
         _replayBots.Clear();
         _replayCache.Clear();
         _stageReplayCache.Clear();
+        Array.Clear(_replayBotBySlot, 0, _replayBotBySlot.Length);
 
         for (var i = 0; i < PlayerSlot.MaxPlayerSlot; i++)
         {
@@ -298,10 +301,7 @@ internal partial class ReplayModule : IReplayModule, IModule, IGameListener, IEn
         {
             var data = new PlayerFrameData
             {
-                Frames = new ()
-                {
-                    Capacity = Utils.Tickrate * 60 * 5,
-                },
+                Frames = new ReplayFrameBuffer(Utils.Tickrate * 60 * 5),
                 SteamId = player.SteamId,
                 Name    = player.Name,
             };
@@ -344,6 +344,7 @@ internal partial class ReplayModule : IReplayModule, IModule, IGameListener, IEn
         };
 
         _replayBots.Add(botData);
+        _replayBotBySlot[player.Slot] = botData;
 
         if (!botData.Config.StageBot)
         {
@@ -366,6 +367,7 @@ internal partial class ReplayModule : IReplayModule, IModule, IGameListener, IEn
             if (_replayBots.Find(i => i.Client.Equals(player.Client)) is { } bot)
             {
                 _replayBots.Remove(bot);
+                _replayBotBySlot[player.Slot] = null;
             }
 
             return;
@@ -407,7 +409,7 @@ internal partial class ReplayModule : IReplayModule, IModule, IGameListener, IEn
         frame.TimerFinishFrame = 0;
         frame.FinishTime       = 0;
         frame.Frames.Clear();
-        frame.Frames.Capacity = Utils.Tickrate * 60 * 5;
+        frame.Frames.EnsureCapacity(Utils.Tickrate * 60 * 5);
     }
 
     private void ClearReplayBots()
@@ -420,6 +422,7 @@ internal partial class ReplayModule : IReplayModule, IModule, IGameListener, IEn
             }
 
             _replayBots.Clear();
+            Array.Clear(_replayBotBySlot, 0, _replayBotBySlot.Length);
         });
     }
 
@@ -461,6 +464,6 @@ internal partial class ReplayModule : IReplayModule, IModule, IGameListener, IEn
 
     public ReplayBotData? GetReplayBotData(PlayerSlot slot)
     {
-        return _replayBots.AsValueEnumerable().FirstOrDefault(bot => bot.Client.Slot == slot);
+        return _replayBotBySlot[slot];
     }
 }

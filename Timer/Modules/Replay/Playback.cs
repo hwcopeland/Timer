@@ -74,7 +74,7 @@ internal partial class ReplayModule
 
         var header = bot.Header;
 
-        if (header == null || bot.Frames.Length == 0)
+        if (header == null || bot.Frames.Count == 0)
         {
             bot.Status = EReplayBotStatus.Idle;
         }
@@ -344,7 +344,7 @@ internal partial class ReplayModule
             return;
         }
 
-        if (_replayBots.Find(i => i.Client.Equals(client)) is not { } bot)
+        if (_replayBotBySlot[client.Slot] is not { } bot)
         {
             return;
         }
@@ -354,7 +354,7 @@ internal partial class ReplayModule
             return;
         }
 
-        if (bot.CurrentFrame >= bot.Frames.Length)
+        if (bot.CurrentFrame >= bot.Frames.Count)
         {
             return;
         }
@@ -377,12 +377,12 @@ internal partial class ReplayModule
             return;
         }
 
-        if (_replayBots.Find(i => i.Client.Equals(client)) is not { } bot)
+        if (_replayBotBySlot[client.Slot] is not { } bot)
         {
             return;
         }
 
-        var totalFrames = bot.Frames.Length;
+        var totalFrames = bot.Frames.Count;
 
         var pawn = arg.Pawn;
 
