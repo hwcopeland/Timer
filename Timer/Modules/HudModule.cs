@@ -14,7 +14,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
- 
+
 using System;
 using Cysharp.Text;
 using Microsoft.Extensions.Logging;
@@ -93,15 +93,14 @@ internal class HudModule : IModule, IHudModule
 
         var pawn = param.Pawn;
 
-        if (!pawn.IsAlive)
+        if (pawn.AsObserver() is { } observer && observer.GetObserverService() is { } observerService)
         {
-            if (pawn.GetObserverService() is not { } observer
-                || observer.ObserverMode is ObserverMode.None or ObserverMode.Roaming)
+            if (observerService.ObserverMode is ObserverMode.None or ObserverMode.Roaming)
             {
                 return;
             }
 
-            var observerTarget = observer.ObserverTarget;
+            var observerTarget = observerService.ObserverTarget;
 
             if (!observerTarget.IsValid()
                 || _bridge.EntityManager.FindEntityByHandle(observerTarget)?.AsPlayerPawn() is not { } targetPawn
@@ -142,7 +141,7 @@ internal class HudModule : IModule, IHudModule
         PrintPlayerHud(client, slot, pawn, timerInfo);
     }
 
-    private void PrintPlayerHud(IGameClient client, PlayerSlot slot, IPlayerPawn pawn, ITimerInfo timerInfo)
+    private void PrintPlayerHud(IGameClient client, PlayerSlot slot, IBasePlayerPawn pawn, ITimerInfo timerInfo)
     {
         var velocity = pawn.GetAbsVelocity();
 

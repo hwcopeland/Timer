@@ -14,7 +14,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
- 
+
 using System;
 using Sharp.Shared.Enums;
 using Sharp.Shared.Types;
@@ -35,7 +35,8 @@ internal unsafe partial class MiscModule
 
     private ECommandAction OnCommandGiveWeapon(IGamePlayer player, StringCommand command)
     {
-        if (_bridge.EntityManager.FindPlayerPawnBySlot(player.Slot) is not { IsAlive: true } pawn)
+        if (_bridge.EntityManager.FindPlayerPawnBySlot(player.Slot) is not { } basePawn
+            || basePawn.AsPlayer() is not { IsAlive: true } pawn)
         {
             return ECommandAction.Handled;
         }

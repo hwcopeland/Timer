@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Source2Surf/Timer
  * Copyright (C) 2025 Nukoooo and Kxnrl
  *
@@ -199,7 +199,7 @@ public class Timer : IModSharpModule
         }
     }
 
-    private void ConfigureServices(IServiceCollection services)
+    private static void ConfigureServices(IServiceCollection services)
     {
         services.AddLogging();
 

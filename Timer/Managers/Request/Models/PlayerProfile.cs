@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Source2Surf/Timer
  * Copyright (C) 2025 Nukoooo and Kxnrl
  *

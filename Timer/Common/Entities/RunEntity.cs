@@ -32,17 +32,41 @@ internal sealed class RunEntity : BaseSteamIdSerialEntity
     public uint     Strafes { get; set; }
     public double   Sync    { get; set; }
 
-    [SugarColumn(ColumnName = "velStart")]
-    public double VelocityStart { get; set; }
+    [SugarColumn(ColumnName = "velStartX")]
+    public double VelocityStartX { get; set; }
 
-    [SugarColumn(ColumnName = "velEnd")]
-    public double VelocityEnd { get; set; }
+    [SugarColumn(ColumnName = "velStartY")]
+    public double VelocityStartY { get; set; }
 
-    [SugarColumn(ColumnName = "velMax")]
-    public double VelocityMax { get; set; }
+    [SugarColumn(ColumnName = "velStartZ")]
+    public double VelocityStartZ { get; set; }
 
-    [SugarColumn(ColumnName = "velAvg")]
-    public double VelocityAvg { get; set; }
+    [SugarColumn(ColumnName = "velEndX")]
+    public double VelocityEndX { get; set; }
+
+    [SugarColumn(ColumnName = "velEndY")]
+    public double VelocityEndY { get; set; }
+
+    [SugarColumn(ColumnName = "velEndZ")]
+    public double VelocityEndZ { get; set; }
+
+    [SugarColumn(ColumnName = "velMaxX")]
+    public double VelocityMaxX { get; set; }
+
+    [SugarColumn(ColumnName = "velMaxY")]
+    public double VelocityMaxY { get; set; }
+
+    [SugarColumn(ColumnName = "velMaxZ")]
+    public double VelocityMaxZ { get; set; }
+
+    [SugarColumn(ColumnName = "velAvgX")]
+    public double VelocityAvgX { get; set; }
+
+    [SugarColumn(ColumnName = "velAvgY")]
+    public double VelocityAvgY { get; set; }
+
+    [SugarColumn(ColumnName = "velAvgZ")]
+    public double VelocityAvgZ { get; set; }
 
     public DateTime Date { get; set; }
 }

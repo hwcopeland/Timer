@@ -14,7 +14,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
- 
+
 using System;
 using System.Linq;
 using Microsoft.Extensions.DependencyInjection;
@@ -654,14 +654,12 @@ internal partial class TimerModule : ITimerModule, IModule
     {
         var client = arg.Client;
 
-        if (client.IsFakeClient)
+        if (client.IsFakeClient || arg.Pawn.AsPlayer() is not { IsAlive: true } pawn)
         {
             return;
         }
 
-        var pawn = arg.Pawn;
-
-        if (!pawn.IsAlive || TimerInfo[client.Slot] is not { } timerInfo || StageTimerInfo[client.Slot] is not { } stageTimer)
+        if (TimerInfo[client.Slot] is not { } timerInfo || StageTimerInfo[client.Slot] is not { } stageTimer)
         {
             return;
         }
