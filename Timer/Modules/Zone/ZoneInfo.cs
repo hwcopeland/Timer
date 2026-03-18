@@ -1,4 +1,4 @@
-﻿/*
+﻿﻿/*
  * Source2Surf/Timer
  * Copyright (C) 2025 Nukoooo and Kxnrl
  *
@@ -19,20 +19,12 @@ using System.Text.Json.Serialization;
 using Sharp.Shared.GameEntities;
 using Sharp.Shared.Types;
 using Sharp.Shared.Units;
+using Source2Surf.Timer.Shared.Models.Zone;
 
 namespace Source2Surf.Timer.Modules.Zone;
 
-internal enum EZoneType : sbyte
-{
-    Invalid    = -1,
-    Start      = 0,
-    End        = 1,
-    Stage      = 2,
-    Checkpoint = 3,
-    StopTimer  = 4,
-}
 
-internal class ZoneInfo
+internal class ZoneInfo : IZoneInfo
 {
     public EZoneType   ZoneType       { get; init; } = EZoneType.Invalid;
     public int         Track          { get; set; }  = 0;
@@ -53,8 +45,8 @@ internal class ZoneInfo
 
     public bool Prebuilt { get; init; }
 
-    public int Data { get; set; } = 0; // 如果是Stage的就是第几关, Checkpoint就是第几个Checkpoint
+    public int Data { get; set; } = 0; // Stage number for Stage zones, checkpoint index for Checkpoint zones
 
     [JsonIgnore]
-    public IBaseEntity[]? Beams = null; // 只有 ZoneType 为 Start 和 End 的时候才有
+    public IBaseEntity[]? Beams = null; // Only populated for Start and End zone types
 }

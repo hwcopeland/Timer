@@ -16,13 +16,10 @@
  */
 
 using System;
-using System.Linq;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Sharp.Shared.Definition;
 using Sharp.Shared.Enums;
 using Sharp.Shared.GameEntities;
-using Sharp.Shared.GameObjects;
 using Sharp.Shared.HookParams;
 using Sharp.Shared.Objects;
 using Sharp.Shared.Types;
@@ -31,79 +28,72 @@ using Source2Surf.Timer.Extensions;
 using Source2Surf.Timer.Managers;
 using Source2Surf.Timer.Managers.Player;
 using Source2Surf.Timer.Modules.Timer;
-using Source2Surf.Timer.Modules.Zone;
+using Source2Surf.Timer.Shared.Interfaces;
+using Source2Surf.Timer.Shared.Interfaces.Listeners;
+using Source2Surf.Timer.Shared.Models.Style;
+using Source2Surf.Timer.Shared.Models.Timer;
+using Source2Surf.Timer.Shared.Models.Zone;
 
 namespace Source2Surf.Timer.Modules;
 
 internal interface ITimerModule
 {
-    delegate void PlayerFinishMapDelegate(IPlayerController controller,
-                                          IPlayerPawn       pawn,
-                                          ITimerInfo        timerInfo);
+    void RegisterListener(ITimerModuleListener listener);
 
-    delegate void PlayerFinishStageTimerDelegate(IPlayerController controller,
-                                                 IPlayerPawn       pawn,
-                                                 IStageTimerInfo   stageTimerInfo);
-
-    delegate void PlayerTimeStartDelegate(IPlayerController controller,
-                                          IPlayerPawn       pawn,
-                                          ITimerInfo        timerInfo);
-
-    delegate void PlayerOnStageTimerStartDelegate(IPlayerController controller,
-                                                  IPlayerPawn       pawn,
-                                                  IStageTimerInfo   stageTimerInfo);
-
-    event PlayerTimeStartDelegate OnPlayerTimerStart;
-    event PlayerFinishMapDelegate OnPlayerFinishMap;
-
-    event PlayerOnStageTimerStartDelegate OnPlayerStageTimerStart;
-    event PlayerFinishStageTimerDelegate  OnPlayerStageTimerFinish;
+    void UnregisterListener(ITimerModuleListener listener);
 
     ITimerInfo? GetTimerInfo(PlayerSlot slot);
 
     ITimerInfo? GetStageTimerInfo(PlayerSlot slot);
 
     void StopTimer(PlayerSlot slot);
+
+    bool PauseTimer(PlayerSlot slot);
+
+    bool ResumeTimer(PlayerSlot slot);
 }
 
 // TODO:
 // WRCP time
 
-internal partial class TimerModule : ITimerModule, IModule
+internal partial class TimerModule : ITimerModule, IModule, IZoneModuleListener, IPlayerManagerListener
 {
     private readonly InterfaceBridge      _bridge;
     private readonly ICommandManager      _commandManager;
     private readonly IEventHookManager    _eventHook;
     private readonly ILogger<TimerModule> _logger;
+    private readonly ListenerHub<ITimerModuleListener> _listenerHub;
 
-    private readonly IPlayerManager _playerManager;
+    private readonly IPlayerManager  _playerManager;
+    private readonly IMapInfoModule  _mapInfoModule;
+    private readonly IStyleModule    _styleModule;
 
-    private static readonly TimerInfo?[]      TimerInfo;
-    private static readonly StageTimerInfo?[] StageTimerInfo;
+    private readonly TimerInfo?[]      _timerInfo;
+    private readonly StageTimerInfo?[] _stageTimerInfo;
+    private readonly bool[]            _authenticated;
+    private readonly PauseState?[]     _pauseState;
+
+    private static readonly TraceShapeHull StandingHull = new()
+    {
+        Mins = new (-16, -16, -16),
+        Maxs = new (16, 16, 72),
+    };
+
+    private static readonly TraceShapeHull DuckedHull = new()
+    {
+        Mins = new (-16, -16, -16),
+        Maxs = new (16, 16, 54),
+    };
 
     private readonly IZoneModule _zoneModule;
 
-    // ReSharper disable InconsistentNaming
-    private readonly IConVar timer_max_prejump;
-    private readonly IConVar timer_max_prespeed;
-    private readonly IConVar timer_max_prespeed_z;
-
     private readonly IConVar sv_standable_normal;
-
-    // ReSharper restore InconsistentNaming
-
-    static TimerModule()
-    {
-        TimerInfo = Enumerable.Repeat<TimerInfo?>(null, PlayerSlot.MaxPlayerSlot)
-                              .ToArray();
-
-        StageTimerInfo = Enumerable.Repeat<StageTimerInfo?>(null, PlayerSlot.MaxPlayerSlot)
-                                   .ToArray();
-    }
 
     public TimerModule(InterfaceBridge      bridge,
                        IPlayerManager       playerManager,
                        IZoneModule          zoneModule,
+                       IMapInfoModule       mapInfoModule,
+                       IStyleModule         styleModule,
                        IEventHookManager    eventHook,
                        ICommandManager      commandManager,
                        ILogger<TimerModule> logger)
@@ -111,16 +101,20 @@ internal partial class TimerModule : ITimerModule, IModule
         _bridge         = bridge;
         _playerManager  = playerManager;
         _zoneModule     = zoneModule;
+        _mapInfoModule  = mapInfoModule;
+        _styleModule    = styleModule;
         _eventHook      = eventHook;
         _commandManager = commandManager;
 
-        _logger = logger;
+        _logger      = logger;
+        _listenerHub = new ListenerHub<ITimerModuleListener>(logger);
+
+        _timerInfo      = new TimerInfo?[PlayerSlot.MaxPlayerCount];
+        _stageTimerInfo = new StageTimerInfo?[PlayerSlot.MaxPlayerCount];
+        _authenticated  = new bool[PlayerSlot.MaxPlayerCount];
+        _pauseState     = new PauseState?[PlayerSlot.MaxPlayerCount];
 
         sv_standable_normal = bridge.ConVarManager.FindConVar("sv_standable_normal")!;
-
-        timer_max_prejump    = bridge.ConVarManager.CreateConVar("timer_max_prejump",    1,    1, 10, "可以在起点里跳多少次")!;
-        timer_max_prespeed   = bridge.ConVarManager.CreateConVar("timer_max_prespeed",   375f, "出起点时的最大2D速度")!;
-        timer_max_prespeed_z = bridge.ConVarManager.CreateConVar("timer_max_prespeed_z", 500f, 0, 3500f, "出起点时的最大垂直速度")!;
 
         // ReSharper disable InconsistentNaming
         if (bridge.ConVarManager.FindConVar("view_punch_decay") is { } view_punch_decay)
@@ -151,12 +145,9 @@ internal partial class TimerModule : ITimerModule, IModule
         _bridge.HookManager.PlayerProcessMovePre.InstallForward(OnPlayerProcessMovePre);
         _bridge.HookManager.PlayerSpawnPost.InstallForward(OnPlayerSpawnPost);
 
-        _zoneModule.OnStartTouch += OnZoneStartTouch;
-        _zoneModule.OnTrigger    += OnZoneTrigger;
-        _zoneModule.OnEndTouch   += OnZoneEndTouch;
+        _zoneModule.RegisterListener(this);
 
-        _playerManager.ClientPutInServer  += OnClientPutInServer;
-        _playerManager.ClientDisconnected += OnClientDisconnected;
+        _playerManager.RegisterListener(this);
 
         InitCommands();
 
@@ -176,23 +167,20 @@ internal partial class TimerModule : ITimerModule, IModule
         _bridge.HookManager.PlayerProcessMovePre.RemoveForward(OnPlayerProcessMovePre);
         _bridge.HookManager.PlayerSpawnPost.RemoveForward(OnPlayerSpawnPost);
 
-        _zoneModule.OnStartTouch -= OnZoneStartTouch;
-        _zoneModule.OnTrigger    -= OnZoneTrigger;
-        _zoneModule.OnEndTouch   -= OnZoneEndTouch;
+        _zoneModule.UnregisterListener(this);
 
-        _playerManager.ClientPutInServer  -= OnClientPutInServer;
-        _playerManager.ClientDisconnected -= OnClientDisconnected;
+        _playerManager.UnregisterListener(this);
     }
 
-    private void OnZoneStartTouch(ZoneInfo info, IPlayerController controller, IPlayerPawn pawn)
+    public void OnZoneStartTouch(IZoneInfo info, IPlayerController controller, IPlayerPawn pawn)
     {
         if (!pawn.IsAlive || controller.IsFakeClient)
         {
             return;
         }
 
-        if (TimerInfo[controller.PlayerSlot] is not { } timerInfo
-            || StageTimerInfo[controller.PlayerSlot] is not { } stageTimer)
+        if (_timerInfo[controller.PlayerSlot] is not { } timerInfo
+            || _stageTimerInfo[controller.PlayerSlot] is not { } stageTimer)
         {
             return;
         }
@@ -212,6 +200,17 @@ internal partial class TimerModule : ITimerModule, IModule
             {
                 timerInfo.StopTimer();
 
+                // Clamp speed on entering start zone: kill momentum from flying in, don't preserve Z velocity
+                var enterLimit = _mapInfoModule.GetEnterSpeedLimit(info.Track);
+
+                if (enterLimit > 0.0f)
+                {
+                    if (LimitSpeed(ref velocity, enterLimit, false))
+                    {
+                        pawn.SetAbsVelocity(velocity);
+                    }
+                }
+
                 break;
             }
             case EZoneType.End:
@@ -219,7 +218,7 @@ internal partial class TimerModule : ITimerModule, IModule
                 if (stageTimer.IsTimerRunning())
                 {
                     stageTimer.EndVelocity = velocity;
-                    OnPlayerStageTimerFinish?.Invoke(controller, pawn, stageTimer);
+                    NotifyPlayerStageTimerFinish(controller, pawn, stageTimer);
                     stageTimer.StopTimer();
                 }
 
@@ -234,7 +233,7 @@ internal partial class TimerModule : ITimerModule, IModule
                         timerInfo.AddCheckpoint(currentCp);
                     }
 
-                    OnPlayerFinishMap?.Invoke(controller, pawn, timerInfo);
+                    NotifyPlayerFinishMap(controller, pawn, timerInfo);
 
                     timerInfo.StopTimer();
                 }
@@ -250,8 +249,15 @@ internal partial class TimerModule : ITimerModule, IModule
 
                 var newStageIndex = info.Data;
 
-                // going backwards or skipping stages
-                if (newStageIndex <= stageTimer.Stage || newStageIndex != stageTimer.Stage + 1)
+                // Re-entering the current stage (e.g. teleported back after failing) — restart stage timer
+                if (newStageIndex == stageTimer.Stage)
+                {
+                    stageTimer.StopTimer();
+                    return;
+                }
+
+                // Going backwards or skipping stages
+                if (newStageIndex < stageTimer.Stage || newStageIndex != stageTimer.Stage + 1)
                 {
                     timerInfo.StopTimer();
                     stageTimer.StopTimer();
@@ -263,10 +269,25 @@ internal partial class TimerModule : ITimerModule, IModule
 
                 stageTimer.EndVelocity = velocity;
 
-                OnPlayerStageTimerFinish?.Invoke(controller, pawn, stageTimer);
+                NotifyPlayerStageTimerFinish(controller, pawn, stageTimer);
 
                 stageTimer.StopTimer();
                 stageTimer.Stage = newStageIndex;
+
+                // Clamp speed on entering stage start: only applies when main timer isn't running (practicing a stage),
+                // to avoid ruining a full run when passing through a stage zone
+                if (!timerInfo.IsTimerRunning())
+                {
+                    var enterLimit = _mapInfoModule.GetEnterSpeedLimit(info.Track);
+
+                    if (enterLimit > 0.0f)
+                    {
+                        if (LimitSpeed(ref velocity, enterLimit, false))
+                        {
+                            pawn.SetAbsVelocity(velocity);
+                        }
+                    }
+                }
 
                 break;
             }
@@ -304,10 +325,15 @@ internal partial class TimerModule : ITimerModule, IModule
 
                 timerInfo.AddCheckpoint(checkpointInfo);
 
-                timerInfo.CurrentCheckpointInfo = new ();
+                timerInfo.CurrentCheckpointInfo = new ()
+                {
+                    StartVelocity = velocity,
+                    MaxVelocity   = velocity,
+                };
 
                 timerInfo.Checkpoint = newCheckpointIndex;
-                pawn.PrintToChat($"{ChatColor.LightGreen}{controller.PlayerName}{ChatColor.White} reached CP{info.Data} with time {ChatColor.LightGreen}{Utils.FormatTime(timerInfo.Time, true)}{ChatColor.White}");
+
+                NotifyReachCheckpoint(controller, pawn, timerInfo, newCheckpointIndex);
 
                 break;
             }
@@ -321,10 +347,10 @@ internal partial class TimerModule : ITimerModule, IModule
         }
     }
 
-    private void OnZoneTrigger(ZoneInfo info, IPlayerController controller, IPlayerPawn pawn)
+    public void OnZoneTrigger(IZoneInfo info, IPlayerController controller, IPlayerPawn pawn)
     {
-        if (TimerInfo[controller.PlayerSlot] is not { } timerInfo
-            || StageTimerInfo[controller.PlayerSlot] is not { } stageTimer
+        if (_timerInfo[controller.PlayerSlot] is not { } timerInfo
+            || _stageTimerInfo[controller.PlayerSlot] is not { } stageTimer
             || !pawn.IsAlive
             || controller.IsFakeClient)
         {
@@ -349,10 +375,10 @@ internal partial class TimerModule : ITimerModule, IModule
         stageTimer.UpdateInZone(info.ZoneType);
     }
 
-    private void OnZoneEndTouch(ZoneInfo info, IPlayerController controller, IPlayerPawn pawn)
+    public void OnZoneEndTouch(IZoneInfo info, IPlayerController controller, IPlayerPawn pawn)
     {
-        if (TimerInfo[controller.PlayerSlot] is not { } timerInfo
-            || StageTimerInfo[controller.PlayerSlot] is not { } stageTimer
+        if (_timerInfo[controller.PlayerSlot] is not { } timerInfo
+            || _stageTimerInfo[controller.PlayerSlot] is not { } stageTimer
             || !pawn.IsAlive
             || controller.IsFakeClient)
         {
@@ -365,9 +391,9 @@ internal partial class TimerModule : ITimerModule, IModule
         }
 
         timerInfo.UpdateInZone(EZoneType.Invalid);
+        stageTimer.UpdateInZone(EZoneType.Invalid);
 
         var velocity = pawn.GetAbsVelocity();
-        var speed    = velocity.Length2D();
 
         switch (info.ZoneType)
         {
@@ -378,37 +404,32 @@ internal partial class TimerModule : ITimerModule, IModule
                     return;
                 }
 
-                // TODO: Zone prespeed from ZoneInfo
-                var maxPreSpeed         = timer_max_prespeed.GetFloat();
-                var maxVerticalPreSpeed = timer_max_prespeed_z.GetFloat();
-
-                var scale        = maxPreSpeed / Math.Max(speed, 1);
-                var shouldUpdate = false;
-
-                if (scale < 1.0f)
+                if (!_authenticated[controller.PlayerSlot])
                 {
-                    velocity.X   *= scale;
-                    velocity.Y   *= scale;
-                    shouldUpdate =  true;
+                    controller.PrintToChat("Your Steam account has not been verified yet. The server may not be connected to Steam. Please wait and try again.");
+                    return;
                 }
 
-                if (velocity.Z > maxVerticalPreSpeed)
+                if (!CanAllListenersStartTimer(controller, pawn))
                 {
-                    velocity.Z   = maxVerticalPreSpeed;
-                    shouldUpdate = true;
+                    return;
                 }
 
-                if (shouldUpdate)
+                // Clamp speed on leaving start zone: ZoneConfig > Style > GameMode priority, preserve Z velocity
+                var style = _styleModule.GetStyleSetting(timerInfo.Style);
+                var exitLimit = GetEffectiveExitSpeedLimit(info.Track, style);
+
+                if (exitLimit > 0.0f)
                 {
-                    _bridge.ModSharp.InvokeFrameAction(() => { pawn.SetAbsVelocity(velocity); });
+                    if (LimitSpeed(ref velocity, exitLimit, true))
+                    {
+                        pawn.SetAbsVelocity(velocity);
+                    }
                 }
 
                 if (_zoneModule.CurrentTrackHasCheckpoints(timerInfo.Track))
                 {
-                    timerInfo.CurrentCheckpointInfo = new ()
-                    {
-                        StartVelocity = velocity,
-                    };
+                    timerInfo.CurrentCheckpointInfo = new () { StartVelocity = velocity, MaxVelocity = velocity };
                 }
                 else
                 {
@@ -416,7 +437,7 @@ internal partial class TimerModule : ITimerModule, IModule
                 }
 
                 timerInfo.StartTimer(info.Track, velocity);
-                OnPlayerTimerStart?.Invoke(controller, pawn, timerInfo);
+                NotifyPlayerTimerStart(controller, pawn, timerInfo);
 
                 if (_zoneModule.IsCurrentTrackLinear(timerInfo.Track))
                 {
@@ -424,7 +445,7 @@ internal partial class TimerModule : ITimerModule, IModule
                 }
 
                 stageTimer.StartTimer(info.Track, velocity, 1);
-                OnPlayerStageTimerStart?.Invoke(controller, pawn, stageTimer);
+                NotifyPlayerStageTimerStart(controller, pawn, stageTimer);
 
                 break;
             }
@@ -435,47 +456,301 @@ internal partial class TimerModule : ITimerModule, IModule
                     return;
                 }
 
-                stageTimer.StartTimer(info.Track, velocity, info.Data);
-                OnPlayerStageTimerStart?.Invoke(controller, pawn, stageTimer);
-
-                /*
+                // Clamp speed on leaving stage start: only applies when main timer isn't running (practicing a stage),
+                // to avoid ruining a full run when passing through a stage zone
                 if (!timerInfo.IsTimerRunning())
                 {
-                    return;
+                    var style = _styleModule.GetStyleSetting(timerInfo.Style);
+                    var exitLimit = GetEffectiveExitSpeedLimit(info.Track, style);
+
+                    if (exitLimit > 0.0f)
+                    {
+                        if (LimitSpeed(ref velocity, exitLimit, true))
+                        {
+                            pawn.SetAbsVelocity(velocity);
+                        }
+                    }
                 }
 
-                var stageTimer = timerInfo.StageTimer;
-                stageTimer.Start(velocity);
-                OnPlayerStageTimerStart?.Invoke(controller, pawn, timerInfo, stageTimer);
-                */
+                stageTimer.StartTimer(info.Track, velocity, info.Data);
+                NotifyPlayerStageTimerStart(controller, pawn, stageTimer);
 
                 break;
             }
         }
     }
 
-    public event ITimerModule.PlayerFinishMapDelegate?         OnPlayerFinishMap;
-    public event ITimerModule.PlayerOnStageTimerStartDelegate? OnPlayerStageTimerStart;
-    public event ITimerModule.PlayerTimeStartDelegate?         OnPlayerTimerStart;
-    public event ITimerModule.PlayerFinishStageTimerDelegate?  OnPlayerStageTimerFinish;
-
     public ITimerInfo? GetTimerInfo(PlayerSlot slot)
-        => TimerInfo[slot];
+        => _timerInfo[slot];
 
     public ITimerInfo? GetStageTimerInfo(PlayerSlot slot)
-        => StageTimerInfo[slot];
+        => _stageTimerInfo[slot];
+
+    public void RegisterListener(ITimerModuleListener listener)
+        => _listenerHub.Register(listener);
+
+    public void UnregisterListener(ITimerModuleListener listener)
+        => _listenerHub.Unregister(listener);
+
+    private void Restart(PlayerSlot slot, int track = -1)
+    {
+        if (_bridge.ClientManager.GetGameClient(slot) is not { } client)
+        {
+            return;
+        }
+
+        if (client.GetPlayerController() is not { IsValidEntity: true } controller)
+        {
+            return;
+        }
+
+        if (controller.GetPlayerPawn() is not { IsValidEntity: true } pawn)
+        {
+            return;
+        }
+
+        if (!pawn.IsAlive)
+        {
+            return;
+        }
+
+        if (_timerInfo[slot] is { } timerInfo)
+        {
+            timerInfo.StopTimer();
+            timerInfo.ChangeTrack(track);
+        }
+
+        if (_stageTimerInfo[slot] is { } stageTimer)
+        {
+            stageTimer.StopTimer();
+            stageTimer.ChangeTrack(track);
+        }
+
+        if (!_zoneModule.TeleportToZone(pawn, track, EZoneType.Start))
+        {
+            return;
+        }
+    }
+
+    private void NotifyPlayerTimerStart(IPlayerController controller, IPlayerPawn pawn, TimerInfo timerInfo)
+    {
+        foreach (var listener in _listenerHub.Snapshot)
+        {
+            try
+            {
+                listener.OnPlayerTimerStart(controller, pawn, timerInfo);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogError(exception, "Error when calling OnPlayerTimerStart listener");
+            }
+        }
+    }
+
+    private void NotifyPlayerFinishMap(IPlayerController controller, IPlayerPawn pawn, TimerInfo timerInfo)
+    {
+        foreach (var listener in _listenerHub.Snapshot)
+        {
+            try
+            {
+                listener.OnPlayerFinishMap(controller, pawn, timerInfo);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogError(exception, "Error when calling OnPlayerFinishMap listener");
+            }
+        }
+    }
+
+    private void NotifyPlayerStageTimerStart(IPlayerController controller, IPlayerPawn pawn, StageTimerInfo stageTimerInfo)
+    {
+        foreach (var listener in _listenerHub.Snapshot)
+        {
+            try
+            {
+                listener.OnPlayerStageTimerStart(controller, pawn, stageTimerInfo);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogError(exception, "Error when calling OnPlayerStageTimerStart listener");
+            }
+        }
+    }
+
+    private void NotifyPlayerStageTimerFinish(IPlayerController controller, IPlayerPawn pawn, StageTimerInfo stageTimerInfo)
+    {
+        foreach (var listener in _listenerHub.Snapshot)
+        {
+            try
+            {
+                listener.OnPlayerStageTimerFinish(controller, pawn, stageTimerInfo);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogError(exception, "Error when calling OnPlayerStageTimerFinish listener");
+            }
+        }
+    }
+
+    private void NotifyReachCheckpoint(IPlayerController controller, IPlayerPawn pawn, TimerInfo timerInfo, int checkpoint)
+    {
+        foreach (var listener in _listenerHub.Snapshot)
+        {
+            try
+            {
+                listener.OnReachCheckpoint(controller, pawn, timerInfo, checkpoint);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogError(exception, "Error when calling OnReachCheckpoint listener");
+            }
+        }
+    }
+
+    private bool CanAllListenersStartTimer(IPlayerController controller, IPlayerPawn pawn)
+    {
+        foreach (var listener in _listenerHub.Snapshot)
+        {
+            try
+            {
+                if (!listener.CanStartTimer(controller, pawn))
+                {
+                    return false;
+                }
+            }
+            catch (Exception exception)
+            {
+                _logger.LogError(exception, "Error when calling CanStartTimer listener");
+            }
+        }
+
+        return true;
+    }
 
     public void StopTimer(PlayerSlot slot)
     {
-        if (TimerInfo[slot] is { } timerInfo)
+        if (_timerInfo[slot] is { } timerInfo)
         {
             timerInfo.StopTimer();
         }
 
-        if (StageTimerInfo[slot] is { } stageTimer)
+        if (_stageTimerInfo[slot] is { } stageTimer)
         {
             stageTimer.StopTimer();
         }
+
+        _pauseState[slot] = null;
+    }
+
+    public bool PauseTimer(PlayerSlot slot)
+    {
+        if (_timerInfo[slot] is not { } timerInfo || !timerInfo.IsTimerRunning())
+        {
+            return false;
+        }
+
+        if (_bridge.ClientManager.GetGameClient(slot) is not { } client
+            || client.GetPlayerController() is not { IsValidEntity: true } controller
+            || controller.GetPlayerPawn() is not { IsValidEntity: true, IsAlive: true } pawn)
+        {
+            return false;
+        }
+
+        // Must be on ground, not on a ladder, and not moving
+        var onGround = pawn.GroundEntityHandle.IsValid();
+        var onLadder = pawn.ActualMoveType == MoveType.Ladder;
+        var velocity = pawn.GetAbsVelocity();
+        var isMoving = velocity.LengthSqr() > 0;
+
+        if (!onGround || onLadder || isMoving)
+        {
+            return false;
+        }
+
+        // Save position and angles before pausing
+        _pauseState[slot] = new PauseState(pawn.GetAbsOrigin(), pawn.GetEyeAngles());
+
+        timerInfo.PauseTimer();
+
+        if (_stageTimerInfo[slot] is { } stageTimer && stageTimer.IsTimerRunning())
+        {
+            stageTimer.PauseTimer();
+        }
+
+        return true;
+    }
+
+    public bool ResumeTimer(PlayerSlot slot)
+    {
+        if (_timerInfo[slot] is not { } timerInfo || !timerInfo.IsTimerPaused())
+        {
+            return false;
+        }
+
+        if (_bridge.ClientManager.GetGameClient(slot) is not { } client
+            || client.GetPlayerController() is not { IsValidEntity: true } controller
+            || controller.GetPlayerPawn() is not { IsValidEntity: true, IsAlive: true } pawn)
+        {
+            return false;
+        }
+
+        // Restore saved position and angles
+        if (_pauseState[slot] is { } state)
+        {
+            pawn.Teleport(state.Origin, state.Angles, new Vector());
+            _pauseState[slot] = null;
+        }
+
+        timerInfo.ResumeTimer();
+
+        if (_stageTimerInfo[slot] is { } stageTimer && stageTimer.IsTimerPaused())
+        {
+            stageTimer.ResumeTimer();
+        }
+
+        return true;
+    }
+
+    private static bool LimitSpeed(ref Vector velocity, float speedLimit, bool saveZ)
+    {
+        var currentSpeed2D = velocity.Length2D();
+
+        var needsScale  = currentSpeed2D > speedLimit;
+        var needsClearZ = !saveZ && velocity.Z != 0;
+
+        if (!needsScale && !needsClearZ)
+        {
+            return false;
+        }
+
+        if (needsScale)
+        {
+            var scale = speedLimit / currentSpeed2D;
+            velocity.X *= scale;
+            velocity.Y *= scale;
+        }
+
+        if (needsClearZ)
+        {
+            velocity.Z = 0;
+        }
+
+        return true;
+    }
+
+    private float GetEffectiveExitSpeedLimit(int track, StyleSetting style)
+    {
+        if (_mapInfoModule.GetZoneExitSpeedOverride(track) is { } zoneOverride)
+        {
+            return zoneOverride;
+        }
+
+        if (style.CustomPreSpeed)
+        {
+            return style.PreSpeed;
+        }
+
+        return _mapInfoModule.GetGameModeExitSpeedLimit();
     }
 
     private static HookReturnValue<bool> hk_OnPlayerJoinTeam(EventHookParams arg)
@@ -497,7 +772,7 @@ internal partial class TimerModule : ITimerModule, IModule
 
         var pawn = arg.Pawn;
 
-        if (TimerInfo[client.Slot] is { } timerInfo)
+        if (_timerInfo[client.Slot] is { } timerInfo)
         {
             _zoneModule.TeleportToZone(pawn, timerInfo.Track, EZoneType.Start);
         }
@@ -507,289 +782,42 @@ internal partial class TimerModule : ITimerModule, IModule
         }
     }
 
-    private void Restart(IGamePlayer player, int track = -1)
+    public void OnClientPutInServer(PlayerSlot slot)
     {
-        if (player.Controller is not { } controller)
+        if (_bridge.ClientManager.GetGameClient(slot) is { IsFakeClient: true })
         {
             return;
         }
 
-        if (controller.GetPlayerPawn() is not { IsValidEntity: true } pawn)
+        _timerInfo[slot]      = new ();
+        _stageTimerInfo[slot] = new ();
+
+        // when the server is not connected to the steam server, or maybe GC server,
+        // it won't trigger OnClientPostAdminCheck, and we want to save records from authenticated players
+        _authenticated[slot]  = false;
+    }
+
+    public void OnClientDisconnected(PlayerSlot slot)
+    {
+        if (_bridge.ClientManager.GetGameClient(slot) is { IsFakeClient: true })
         {
             return;
         }
 
-        if (!pawn.IsAlive)
-        {
-            return;
-        }
+        _timerInfo[slot]      = null;
+        _stageTimerInfo[slot] = null;
+        _authenticated[slot]  = false;
+        _pauseState[slot]     = null;
+    }
 
-        if (TimerInfo[player.Slot] is { } timerInfo)
+    public void OnClientInfoLoaded(SteamID steamId)
+    {
+        if (_bridge.ClientManager.GetGameClient(steamId) is { IsFakeClient: false } client)
         {
-            timerInfo.StopTimer();
-            timerInfo.ChangeTrack(track);
-        }
-
-        if (StageTimerInfo[player.Slot] is { } stageTimer)
-        {
-            stageTimer.StopTimer();
-            stageTimer.ChangeTrack(track);
-        }
-
-        if (!_zoneModule.TeleportToZone(pawn, track, EZoneType.Start))
-        {
-            return;
+            _authenticated[client.Slot] = true;
         }
     }
 
-    private static void OnClientPutInServer(IGamePlayer player)
-    {
-        if (player.IsFakeClient)
-        {
-            return;
-        }
-
-        TimerInfo[player.Slot]      = new ();
-        StageTimerInfo[player.Slot] = new ();
-    }
-
-    private static void OnClientDisconnected(IGamePlayer player)
-    {
-        if (player.IsFakeClient)
-        {
-            return;
-        }
-
-        TimerInfo[player.Slot]      = null;
-        StageTimerInfo[player.Slot] = null;
-    }
-
-    private unsafe void OnPlayerProcessMovePre(IPlayerProcessMoveForwardParams arg)
-    {
-        var client = arg.Client;
-
-        if (!client.IsValid || client.IsFakeClient)
-        {
-            return;
-        }
-
-        var pawn = arg.Pawn;
-
-        if (!pawn.IsAlive)
-        {
-            return;
-        }
-
-        var service = arg.Service;
-
-        service.Stamina   = 0f;
-        service.DuckSpeed = 7.0f;
-
-        if (TimerInfo[client.Slot] is not { } timerInfo || StageTimerInfo[client.Slot] is not { } stageTimer)
-        {
-            return;
-        }
-
-        var onGround = pawn.GroundEntityHandle.IsValid();
-
-        var info = arg.Info;
-
-        if (pawn.ActualMoveType == MoveType.NoClip)
-        {
-            timerInfo.StopTimer();
-            stageTimer.StopTimer();
-
-            timerInfo.OnGroundTick  = 0;
-            stageTimer.OnGroundTick = 0;
-
-            return;
-        }
-
-        var forwardmove = info->ForwardMove;
-        var sidemove    = info->SideMove;
-
-        var isInStartZone         = timerInfo.InZone == EZoneType.Start || stageTimer.InZone == EZoneType.Stage;
-        var wasOnGround           = timerInfo.WasOnGround               || stageTimer.WasOnGround;
-        var justLeftGround        = !onGround && wasOnGround;
-        var isWithinPrejumpWindow = timerInfo.OnGroundTick <= 10 || stageTimer.OnGroundTick <= 10;
-
-        if (isInStartZone && justLeftGround && isWithinPrejumpWindow)
-        {
-            var maxJumps = timer_max_prejump.GetInt32();
-
-            if (timerInfo.Jumps >= maxJumps || stageTimer.Jumps >= maxJumps)
-            {
-                arg.Velocity      = new ();
-                info->ForwardMove = 0;
-                info->SideMove    = 0;
-
-                timerInfo.Jumps  = 0;
-                stageTimer.Jumps = 0;
-            }
-        }
-
-        UpdateTimerState(timerInfo);
-        UpdateTimerState(stageTimer);
-
-        return;
-
-        void UpdateTimerState(TimerInfo timer)
-        {
-            if (onGround)
-            {
-                timer.OnGroundTick++;
-            }
-            else
-            {
-                timer.OnGroundTick = 0;
-            }
-
-            timer.WasOnGround     = onGround;
-            timer.LastForwardMove = forwardmove;
-            timer.LastLeftMove    = sidemove;
-        }
-    }
-
-    private void OnPlayerRunCommandPost(IPlayerRunCommandHookParams arg, HookReturnValue<EmptyHookReturn> hook)
-    {
-        var client = arg.Client;
-
-        if (client.IsFakeClient || arg.Pawn.AsPlayer() is not { IsAlive: true } pawn)
-        {
-            return;
-        }
-
-        if (TimerInfo[client.Slot] is not { } timerInfo || StageTimerInfo[client.Slot] is not { } stageTimer)
-        {
-            return;
-        }
-
-        var angles   = pawn.GetEyeAngles();
-        var velocity = pawn.GetAbsVelocity();
-
-        var service = arg.Service;
-
-        var leftmove = service.GetNetVarOffset("m_flLeftMove");
-
-        var collision = pawn.GetCollisionProperty()!;
-
-        var hull = new TraceShapeHull
-        {
-            Mins = new (-16, -16, 0),
-            Maxs = new (16, 16, service.GetNetVar<bool>("m_bDucked") ? 54 : 72),
-        };
-
-        var origin = pawn.GetAbsOrigin();
-        var end    = origin;
-        end.Z -= 54;
-
-        var attribute = RnQueryShapeAttr.PlayerMovement(collision.CollisionAttribute.InteractsWith);
-        attribute.SetEntityToIgnore(pawn, 0);
-
-        var result = _bridge.PhysicsQueryManager.TraceShapePlayerMovement(new (hull),
-                                                                          origin,
-                                                                          end,
-                                                                          attribute);
-
-        var isSurfing = result.DidHit() && Math.Abs(result.PlaneNormal.Z) < sv_standable_normal.GetFloat();
-
-        if (timerInfo.IsTimerRunning())
-        {
-            timerInfo.TimerTick++;
-
-            UpdatePlayerStats(pawn,
-                              service,
-                              timerInfo,
-                              angles,
-                              velocity,
-                              isSurfing,
-                              leftmove,
-                              timerInfo.LastYaw);
-
-            if (timerInfo.CurrentCheckpointInfo is { } currentCp)
-            {
-                currentCp.AverageVelocity
-                    += (velocity - currentCp.AverageVelocity) / (timerInfo.TimerTick - currentCp.TimerTick);
-            }
-
-            timerInfo.LastYaw = angles.Y;
-        }
-
-        if (stageTimer.IsTimerRunning())
-        {
-            stageTimer.TimerTick++;
-
-            UpdatePlayerStats(pawn,
-                              service,
-                              stageTimer,
-                              angles,
-                              velocity,
-                              isSurfing,
-                              leftmove,
-                              stageTimer.LastYaw);
-
-            stageTimer.LastYaw = angles.Y;
-        }
-    }
-
-    private static void OnPlayerJump(IGameEvent e)
-    {
-        if (e.GetPlayerController("userid") is not { IsValidEntity: true } controller
-            || TimerInfo[controller.PlayerSlot] is not { } timerInfo)
-        {
-            return;
-        }
-
-        timerInfo.Jumps++;
-
-        if (StageTimerInfo[controller.PlayerSlot] is { } stageTimer)
-        {
-            stageTimer.Jumps++;
-        }
-    }
-
-    private static void UpdatePlayerStats(IPlayerPawn      pawn,
-                                          IMovementService service,
-                                          TimerInfo        timerInfo,
-                                          Vector           angle,
-                                          Vector           velocity,
-                                          bool             isSurfing,
-                                          float            sidemove,
-                                          float            lastYaw)
-    {
-        var onGround = pawn.GroundEntityHandle.IsValid();
-
-        if (!onGround)
-        {
-            var yawDiff = angle.Y - lastYaw;
-
-            if (timerInfo.LastLeftMove != 0 && sidemove is > 0 or < 0)
-            {
-                timerInfo.Strafes++;
-            }
-
-            var buttons = service.KeyButtons;
-
-            var isPressingLeft  = (buttons & UserCommandButtons.MoveLeft)  != 0;
-            var isPressingRight = (buttons & UserCommandButtons.MoveRight) != 0;
-
-            if (!isSurfing && (isPressingLeft || isPressingRight) && MathF.Abs(yawDiff) > 0.01)
-            {
-                timerInfo.TotalMeasures++;
-
-                if ((yawDiff    > 0.0f && isPressingLeft  && !isPressingRight)
-                    || (yawDiff < 0.0f && !isPressingLeft && isPressingRight))
-                {
-                    timerInfo.GoodSync++;
-                }
-            }
-        }
-
-        if (velocity.LengthSqr() > timerInfo.MaxVelocity.LengthSqr())
-        {
-            timerInfo.MaxVelocity = velocity;
-        }
-
-        timerInfo.AvgVelocity += (velocity - timerInfo.AvgVelocity) / timerInfo.TimerTick;
-    }
 }
+
+internal readonly record struct PauseState(Vector Origin, Vector Angles);

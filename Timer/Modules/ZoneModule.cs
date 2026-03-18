@@ -14,36 +14,32 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
- 
+
 using System;
 using System.Collections.Generic;
-using System.IO;
-using System.Linq;
 using System.Runtime.CompilerServices;
-using System.Text.Json;
 using System.Threading.Tasks;
 using Iced.Intel;
 using Microsoft.Extensions.Logging;
 using Sharp.Shared.Enums;
 using Sharp.Shared.GameEntities;
-using Sharp.Shared.HookParams;
 using Sharp.Shared.Listeners;
 using Sharp.Shared.Types;
 using Sharp.Shared.Units;
 using Source2Surf.Timer.Extensions;
-using Source2Surf.Timer.Managers;
 using Source2Surf.Timer.Modules.Zone;
-using ZLinq;
+using Source2Surf.Timer.Shared;
+using Source2Surf.Timer.Shared.Interfaces;
+using Source2Surf.Timer.Shared.Interfaces.Listeners;
+using Source2Surf.Timer.Shared.Models.Zone;
 
 namespace Source2Surf.Timer.Modules;
 
 internal interface IZoneModule
 {
-    delegate void OnZoneFireOutputDelegate(ZoneInfo info, IPlayerController controller, IPlayerPawn pawn);
+    void RegisterListener(IZoneModuleListener listener);
 
-    public event OnZoneFireOutputDelegate OnStartTouch;
-    public event OnZoneFireOutputDelegate OnEndTouch;
-    public event OnZoneFireOutputDelegate OnTrigger;
+    void UnregisterListener(IZoneModuleListener listener);
 
     void AddZone(ZoneInfo info);
 
@@ -58,6 +54,8 @@ internal interface IZoneModule
     int GetTotalStages(int track);
 
     int GetCurrentTrackCheckpointCount(int track);
+
+    bool TeleportToStage(IPlayerPawn pawn, int track, int stage);
 }
 
 // TODO:
@@ -69,41 +67,32 @@ internal partial class ZoneModule : IModule, IZoneModule, IEntityListener, IGame
 
     private readonly InterfaceBridge      _bridge;
     private readonly ICommandManager      _commandManager;
-    private readonly IPlayerManager       _playerManager;
+    private readonly IRequestManager      _requestManager;
 
     private readonly ILogger<ZoneModule> _logger;
+    private readonly ListenerHub<IZoneModuleListener> _listenerHub;
 
-    private static readonly int[] CurrentMaxStages = new int[Utils.MAX_TRACK];
+    private readonly int[] _currentMaxStages = new int[TimerConstants.MAX_TRACK];
 
-    private readonly        Dictionary<uint, ZoneInfo> _zones            = [];
-    private static readonly BuildZoneInfo?[]           BuildZoneInfo;
-
-    private readonly string _zonePath;
+    private readonly Dictionary<uint, ZoneInfo> _zones         = [];
+    private readonly BuildZoneInfo?[]           _buildZoneInfo;
 
     // ReSharper disable InconsistentNaming
     private unsafe delegate* unmanaged<Vector*, Vector*, Vector*, nint> CreateTrigger;
 
     // ReSharper restore InconsistentNaming
 
-    static ZoneModule()
-        => BuildZoneInfo = Enumerable.Repeat<BuildZoneInfo?>(null, PlayerSlot.MaxPlayerSlot).ToArray();
-
     public ZoneModule(InterfaceBridge     bridge,
-                      IPlayerManager      playerManager,
                       ICommandManager     commandManager,
+                      IRequestManager     requestManager,
                       ILogger<ZoneModule> logger)
     {
         _bridge         = bridge;
         _logger         = logger;
-        _playerManager  = playerManager;
+        _listenerHub    = new ListenerHub<IZoneModuleListener>(logger);
         _commandManager = commandManager;
-
-        _zonePath = Path.Combine(bridge.TimerDataPath, "zones");
-
-        if (!Directory.Exists(_zonePath))
-        {
-            Directory.CreateDirectory(_zonePath);
-        }
+        _requestManager = requestManager;
+        _buildZoneInfo  = new BuildZoneInfo?[PlayerSlot.MaxPlayerCount];
     }
 
     public void OnEntitySpawned(IBaseEntity entity)
@@ -122,7 +111,7 @@ internal partial class ZoneModule : IModule, IZoneModule, IEntityListener, IGame
             return;
         }
 
-        // 如果是我们自己加的就不管
+        // Skip zones created by the plugin itself
         if (targetName.StartsWith("surftimer_zone_"))
         {
             return;
@@ -133,7 +122,7 @@ internal partial class ZoneModule : IModule, IZoneModule, IEntityListener, IGame
             CreateBeam(entity.Handle);
             _logger.LogInformation("Added prebuilt zone: {name}", targetName);
 
-            entity.SetNetVar("m_flWait", 0.001f);
+            entity.SetNetVar("m_flWait", TimerConstants.TickInterval);
 
             return;
         }
@@ -142,7 +131,7 @@ internal partial class ZoneModule : IModule, IZoneModule, IEntityListener, IGame
         {
             _logger.LogInformation("Added prebuilt zone: {name}", targetName);
 
-            entity.SetNetVar("m_flWait", 0.001f);
+            entity.SetNetVar("m_flWait", TimerConstants.TickInterval);
 
             return;
         }
@@ -186,19 +175,19 @@ internal partial class ZoneModule : IModule, IZoneModule, IEntityListener, IGame
         {
             case "onstarttouch":
             {
-                OnStartTouch?.Invoke(info, controller, pawn);
+                NotifyZoneStartTouch(info, controller, pawn);
 
                 break;
             }
             case "onendtouch":
             {
-                OnEndTouch?.Invoke(info, controller, pawn);
+                NotifyZoneEndTouch(info, controller, pawn);
 
                 break;
             }
             case "ontrigger":
             {
-                OnTrigger?.Invoke(info, controller, pawn);
+                NotifyZoneTrigger(info, controller, pawn);
 
                 break;
             }
@@ -214,17 +203,17 @@ internal partial class ZoneModule : IModule, IZoneModule, IEntityListener, IGame
             throw new InvalidOperationException("Failed to find CreateTriggerInternal");
         }
 
-        for (var i = 0; i < Utils.MAX_TRACK; i++)
+        for (var i = 0; i < TimerConstants.MAX_TRACK; i++)
         {
-            CurrentMaxStages[i] = -1;
+            _currentMaxStages[i] = -1;
         }
     }
 
     public void OnGameShutdown()
     {
-        for (var i = 0; i < Utils.MAX_TRACK; i++)
+        for (var i = 0; i < TimerConstants.MAX_TRACK; i++)
         {
-            CurrentMaxStages[i] = -1;
+            _currentMaxStages[i] = -1;
         }
 
         _zones.Clear();
@@ -232,9 +221,33 @@ internal partial class ZoneModule : IModule, IZoneModule, IEntityListener, IGame
 
     public void OnServerActivate()
     {
-        LoadCustomZones();
+        Task.Run(async () =>
+                 {
+                     try
+                     {
+                         var mapName = _bridge.GlobalVars.MapName;
+                         var zones   = await RetryHelper.RetryAsync(
+                             () => _requestManager.GetZonesAsync(mapName),
+                             RetryHelper.IsTransient, _logger, "GetZonesAsync"
+                         ).ConfigureAwait(false);
 
-        _bridge.ModSharp.InvokeFrameAction(FindZoneStartPosition);
+                         await _bridge.ModSharp.InvokeFrameActionAsync(() =>
+                         {
+                             foreach (var zoneData in zones)
+                             {
+                                 var zoneInfo = ZoneMapper.ToZoneInfo(zoneData);
+                                 AddZone(zoneInfo);
+                             }
+
+                             FindZoneStartPosition();
+                         }).ConfigureAwait(false);
+                     }
+                     catch (Exception e)
+                     {
+                         _logger.LogError(e, "Failed to load custom zones from database");
+                     }
+                 },
+                 _bridge.CancellationToken);
     }
 
     public bool Init()
@@ -250,7 +263,7 @@ internal partial class ZoneModule : IModule, IZoneModule, IEntityListener, IGame
 
         _bridge.HookManager.PlayerRunCommand.InstallHookPre(OnPlayerRunCommandPre);
 
-        _commandManager.AddAdminChatCommand("zone", OnCommandZone);
+        _commandManager.AddAdminChatCommand("zone", [], OnCommandZone);
 
         return true;
     }
@@ -260,14 +273,59 @@ internal partial class ZoneModule : IModule, IZoneModule, IEntityListener, IGame
         _bridge.EntityManager.RemoveEntityListener(this);
         _bridge.ModSharp.RemoveGameListener(this);
         _bridge.HookManager.PlayerRunCommand.RemoveHookPre(OnPlayerRunCommandPre);
-        OnStartTouch = null;
-        OnEndTouch   = null;
-        OnTrigger    = null;
+        _listenerHub.Clear();
     }
 
-    public event IZoneModule.OnZoneFireOutputDelegate? OnStartTouch;
-    public event IZoneModule.OnZoneFireOutputDelegate? OnEndTouch;
-    public event IZoneModule.OnZoneFireOutputDelegate? OnTrigger;
+    public void RegisterListener(IZoneModuleListener listener)
+        => _listenerHub.Register(listener);
+
+    public void UnregisterListener(IZoneModuleListener listener)
+        => _listenerHub.Unregister(listener);
+
+    private void NotifyZoneStartTouch(ZoneInfo info, IPlayerController controller, IPlayerPawn pawn)
+    {
+        foreach (var listener in _listenerHub.Snapshot)
+        {
+            try
+            {
+                listener.OnZoneStartTouch(info, controller, pawn);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogError(exception, "Error when calling OnZoneStartTouch listener");
+            }
+        }
+    }
+
+    private void NotifyZoneEndTouch(ZoneInfo info, IPlayerController controller, IPlayerPawn pawn)
+    {
+        foreach (var listener in _listenerHub.Snapshot)
+        {
+            try
+            {
+                listener.OnZoneEndTouch(info, controller, pawn);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogError(exception, "Error when calling OnZoneEndTouch listener");
+            }
+        }
+    }
+
+    private void NotifyZoneTrigger(ZoneInfo info, IPlayerController controller, IPlayerPawn pawn)
+    {
+        foreach (var listener in _listenerHub.Snapshot)
+        {
+            try
+            {
+                listener.OnZoneTrigger(info, controller, pawn);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogError(exception, "Error when calling OnZoneTrigger listener");
+            }
+        }
+    }
 
     public unsafe void AddZone(ZoneInfo info)
     {
@@ -292,7 +350,7 @@ internal partial class ZoneModule : IModule, IZoneModule, IEntityListener, IGame
 
         if (entPtr == 0)
         {
-            throw new ("Failed to create rigger");
+            throw new ("Failed to create trigger");
         }
 
         if (_bridge.EntityManager.MakeEntityFromPointer<IBaseTrigger>(entPtr) is not { } ent)
@@ -304,7 +362,7 @@ internal partial class ZoneModule : IModule, IZoneModule, IEntityListener, IGame
 
         ent.SpawnFlags =  4097;
         ent.Effects    |= EntityEffects.NoDraw;
-        ent.SetNetVar("m_flWait", 0.015625f);
+        ent.SetNetVar("m_flWait", TimerConstants.TickInterval);
 
         info.Origin = origin;
         info.Index  = ent.Index;
@@ -334,20 +392,69 @@ internal partial class ZoneModule : IModule, IZoneModule, IEntityListener, IGame
         return false;
     }
 
+    public bool TeleportToStage(IPlayerPawn pawn, int track, int stage)
+    {
+        foreach (var (_, zoneInfo) in _zones)
+        {
+            if (zoneInfo.Track != track || zoneInfo.ZoneType != EZoneType.Stage || zoneInfo.Data != stage)
+            {
+                continue;
+            }
+
+            pawn.Teleport(zoneInfo.TeleportOrigin ?? zoneInfo.Origin, null, new Vector());
+
+            return true;
+        }
+
+        return false;
+    }
+
     public bool IsCurrentTrackLinear(int track)
-        => CurrentMaxStages[track] <= 1;
+        => _currentMaxStages[track] <= 1;
 
     public bool HasZone(int track, EZoneType type)
-        => _zones.AsValueEnumerable().Any(i => i.Value.Track == track && i.Value.ZoneType == type);
+    {
+        foreach (var (_, info) in _zones)
+        {
+            if (info.Track == track && info.ZoneType == type)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     public bool CurrentTrackHasCheckpoints(int track)
-        => _zones.AsValueEnumerable().Any(i => i.Value.Track == track && i.Value.ZoneType == EZoneType.Checkpoint);
+    {
+        foreach (var (_, info) in _zones)
+        {
+            if (info.Track == track && info.ZoneType == EZoneType.Checkpoint)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     public int GetTotalStages(int track)
-        => CurrentMaxStages[track];
+        => _currentMaxStages[track];
 
     public int GetCurrentTrackCheckpointCount(int track)
-        => _zones.AsValueEnumerable().Count(i => i.Value.Track == track && i.Value.ZoneType == EZoneType.Checkpoint);
+    {
+        var count = 0;
+
+        foreach (var (_, info) in _zones)
+        {
+            if (info.Track == track && info.ZoneType == EZoneType.Checkpoint)
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
 
     private bool AddPrebuiltZone(IBaseEntity entity, string targetName, EZoneType type)
     {
@@ -386,9 +493,9 @@ internal partial class ZoneModule : IModule, IZoneModule, IEntityListener, IGame
                     return ZoneMatcher.IsStartZone(targetName) && _zones.TryAdd(handle, info);
                 }
 
-                if (CurrentMaxStages[track] < 1)
+                if (_currentMaxStages[track] < 1)
                 {
-                    CurrentMaxStages[track] = 1;
+                    _currentMaxStages[track] = 1;
                 }
 
                 info.Track = track;
@@ -413,9 +520,9 @@ internal partial class ZoneModule : IModule, IZoneModule, IEntityListener, IGame
                     return false;
                 }
 
-                if (stage >= CurrentMaxStages[0])
+                if (stage >= _currentMaxStages[0])
                 {
-                    CurrentMaxStages[0] = stage;
+                    _currentMaxStages[0] = stage;
                 }
 
                 info.Data = stage;
@@ -485,157 +592,6 @@ internal partial class ZoneModule : IModule, IZoneModule, IEntityListener, IGame
             beam.SetNetVar("m_vecEndPos", points[i == 3 ? 0 : i + 1]);
             val.Beams[i] = beam;
         }
-    }
-
-    private HookReturnValue<EmptyHookReturn> OnPlayerRunCommandPre(IPlayerRunCommandHookParams      arg1,
-                                                                   HookReturnValue<EmptyHookReturn> arg2)
-    {
-        var client = arg1.Client;
-
-        if (client.IsFakeClient)
-        {
-            return new ();
-        }
-
-        var pawn = arg1.Pawn;
-
-        if (!pawn.IsAlive || BuildZoneInfo[client.Slot] is not { } buildInfo)
-        {
-            return new ();
-        }
-
-        var eyepos = pawn.GetEyePosition();
-        eyepos.Z -= 2f;
-
-        var direction = pawn.GetEyeAngles().AnglesToVectorForward();
-
-        var end = eyepos + (direction * 1024.0f);
-
-        var attribute = RnQueryShapeAttr.Bullets();
-        attribute.HitTrigger = false;
-        attribute.SetEntityToIgnore(pawn, 0);
-
-        var result = _bridge.PhysicsQueryManager.TraceLineNoPlayers(eyepos, end, attribute);
-
-        const int snapGrid = 2;
-
-        var snapped = SnapToGrid(result.EndPosition + new Vector(0, 0, 3), snapGrid);
-
-        RenderDirectionBeam(buildInfo, eyepos, snapped);
-        RenderSnapBeams(buildInfo, snapped, snapGrid);
-
-        buildInfo.RenderPreviewBeams(buildInfo.Points[0],
-                                     buildInfo.Step == 1 ? snapped + new Vector(0, 0, 128) : buildInfo.Points[1]);
-
-        if ((arg1.KeyButtons & UserCommandButtons.Use) == 0 || (arg1.ChangedButtons & UserCommandButtons.Use) == 0)
-        {
-            return new ();
-        }
-
-        if (buildInfo.Step == 0)
-        {
-            buildInfo.Points[0] = snapped;
-
-            if (buildInfo.RenderBeams[0] == null)
-            {
-                var kv = new Dictionary<string, KeyValuesVariantValueItem>
-                {
-                    { "rendercolor", "255 255 255" },
-                    { "BoltWidth", "6" },
-                };
-
-                for (var i = 0; i < buildInfo.RenderBeams.Length; i++)
-                {
-                    if (_bridge.EntityManager.SpawnEntitySync<IBaseModelEntity>("env_beam", kv) is not
-                    {
-                        IsValidEntity: true,
-                    } beam)
-                    {
-                        return new ();
-                    }
-
-                    buildInfo.RenderBeams[i] = beam;
-                }
-            }
-
-            buildInfo.Step++;
-        }
-        else if (buildInfo.Step == 1)
-        {
-            buildInfo.Points[1] = snapped + new Vector(0, 0, 128);
-
-            AddZone(new ()
-            {
-                Track    = buildInfo.Track,
-                ZoneType = buildInfo.Zone,
-                Prebuilt = false,
-                Corner1  = buildInfo.Points[0],
-                Corner2  = buildInfo.Points[1],
-            });
-
-            buildInfo.KillBeams();
-
-            BuildZoneInfo[client.Slot] = null;
-
-            Task.Run(SaveCustomZones);
-        }
-
-        return new ();
-    }
-
-    private static void RenderSnapBeams(BuildZoneInfo buildInfo, Vector snapped, int snapGrid)
-    {
-        var snapBeams = buildInfo.SnapBeams;
-
-        // forward <-> backwards
-        snapBeams[0].SetAbsOrigin(snapped             + ((new Vector(1,  0, 0) * snapGrid) / 2));
-        snapBeams[0].SetNetVar("m_vecEndPos", snapped + ((new Vector(-1, 0, 0) * snapGrid) / 2));
-
-        // left <-> right
-        snapBeams[1].SetAbsOrigin(snapped             + ((new Vector(0, -1, 0) * snapGrid) / 2));
-        snapBeams[1].SetNetVar("m_vecEndPos", snapped + ((new Vector(0, 1,  0) * snapGrid) / 2));
-    }
-
-    private void RenderDirectionBeam(BuildZoneInfo buildInfo, Vector eyepos, Vector snapped)
-    {
-        if (buildInfo.DirectionBeam is not { } directionBeam)
-        {
-            var kv = new Dictionary<string, KeyValuesVariantValueItem>
-            {
-                { "rendercolor", "255 255 255" },
-                { "BoltWidth", "6" },
-            };
-
-            if (_bridge.EntityManager.SpawnEntitySync<IBaseModelEntity>("env_beam", kv) is not { IsValidEntity: true } beam)
-            {
-                return;
-            }
-
-            beam.SetAbsOrigin(eyepos);
-            beam.SetNetVar("m_vecEndPos", snapped);
-            buildInfo.DirectionBeam = beam;
-        }
-        else
-        {
-            directionBeam.SetAbsOrigin(eyepos);
-            directionBeam.SetNetVar("m_vecEndPos", snapped);
-        }
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static Vector SnapToGrid(in Vector pos, int grid)
-    {
-        if (grid <= 1)
-        {
-            return pos;
-        }
-
-        var gridF = (float) grid;
-
-        var snappedX = (float) Math.Round(pos.X / gridF, MidpointRounding.AwayFromZero) * gridF;
-        var snappedY = (float) Math.Round(pos.Y / gridF, MidpointRounding.AwayFromZero) * gridF;
-
-        return new (snappedX, snappedY, pos.Z);
     }
 
     private void FindZoneStartPosition()
@@ -736,67 +692,11 @@ internal partial class ZoneModule : IModule, IZoneModule, IEntityListener, IGame
                 }
             }
         }
-        catch
+        catch (Exception e)
         {
-            // ignored
+            _logger.LogWarning(e, "Error while decoding instructions in FindTrigger");
         }
 
         return false;
-    }
-
-    private void SaveCustomZones()
-    {
-        var list = _zones.AsValueEnumerable().Where(i => i.Value.Prebuilt == false).Select(i => i.Value).ToArray();
-
-        if (list.Length == 0)
-        {
-            return;
-        }
-
-        var path = Path.Combine(_zonePath, $"{_bridge.GlobalVars.MapName}.jsonc");
-
-        try
-        {
-            var content = JsonSerializer.Serialize(list, Utils.SerializerOptions);
-
-            File.WriteAllText(path, content);
-        }
-        catch (Exception e)
-        {
-            _logger.LogError(e, "Error when trying to save zones to file {path}", path);
-        }
-    }
-
-    private void LoadCustomZones()
-    {
-        var path = Path.Combine(_zonePath, $"{_bridge.GlobalVars.MapName}.jsonc");
-
-        if (!File.Exists(path))
-        {
-            return;
-        }
-
-        var content = File.ReadAllText(path);
-
-        try
-        {
-            var zones = JsonSerializer.Deserialize<List<ZoneInfo>>(content, Utils.DeserializerOptions);
-
-            if (zones is null)
-            {
-                _logger.LogError("Failed to serialize zones from file {path}", path);
-
-                return;
-            }
-
-            foreach (var zone in zones)
-            {
-                AddZone(zone);
-            }
-        }
-        catch (Exception e)
-        {
-            _logger.LogError(e, "Error when trying to load zones from file {path}", path);
-        }
     }
 }

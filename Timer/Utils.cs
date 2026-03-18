@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Source2Surf/Timer
  * Copyright (C) 2025 Nukoooo and Kxnrl
  *
@@ -17,22 +17,14 @@
 
 using System;
 using System.Text.Json;
+using Cysharp.Text;
+using Source2Surf.Timer.Shared;
 
 namespace Source2Surf.Timer;
 
 internal static class Utils
 {
-    public const float TickInterval = 1 / 64f;
-    public const int   Tickrate     = 64;
-    public const int   MAX_STYLE    = 16;
-    public const int   MAX_TRACK    = 32;
-    public const int   MAX_STAGE    = 64;
-
-    public static readonly JsonSerializerOptions SerializerOptions = new ()
-    {
-        WriteIndented = true,
-        IndentSize    = 4,
-    };
+    public static readonly JsonSerializerOptions SerializerOptions = new () { WriteIndented = true, IndentSize = 4 };
 
     public static readonly JsonSerializerOptions DeserializerOptions = new ()
     {
@@ -42,24 +34,102 @@ internal static class Utils
     public static string FormatTime(float totalSeconds, bool precise = false)
     {
         var negative = totalSeconds < 0;
-        var time     = TimeSpan.FromSeconds(Math.Abs(totalSeconds));
+        var total    = Math.Abs(totalSeconds);
 
-        var ms = precise
-            ? time.Milliseconds.ToString("D3")
-            : (time.Milliseconds / 100).ToString("D1");
+        var totalSecondsInt = (int) total;
+        var hours           = totalSecondsInt / 3600;
+        var minutes         = (totalSecondsInt / 60) % 60;
+        var seconds         = totalSecondsInt % 60;
 
-        var formatted = time.TotalHours >= 1.0
-            ? $"{(int) time.TotalHours}:{time.Minutes:D2}:{time.Seconds:D2}.{ms}"
-            : $"{time.Minutes:D2}:{time.Seconds:D2}.{ms}";
+        var fractional = total - totalSecondsInt;
+        var ms         = precise ? (int) (fractional * 1000) : (int) (fractional * 10);
 
-        return negative ? "-" + formatted : formatted;
+        Span<char> buf = stackalloc char[16];
+        var        pos = 0;
+
+        if (negative) buf[pos++] = '-';
+
+        if (hours > 0)
+        {
+            if (hours >= 100) { buf[pos++] = (char) ('0' + (hours / 100)); }
+            if (hours >= 10)  { buf[pos++] = (char) ('0' + ((hours / 10) % 10)); }
+            buf[pos++] = (char) ('0' + (hours % 10));
+            buf[pos++] = ':';
+        }
+
+        buf[pos++] = (char) ('0' + (minutes / 10));
+        buf[pos++] = (char) ('0' + (minutes % 10));
+        buf[pos++] = ':';
+        buf[pos++] = (char) ('0' + (seconds / 10));
+        buf[pos++] = (char) ('0' + (seconds % 10));
+        buf[pos++] = '.';
+
+        if (precise)
+        {
+            buf[pos++] = (char) ('0' + (ms / 100));
+            buf[pos++] = (char) ('0' + ((ms / 10) % 10));
+            buf[pos++] = (char) ('0' + (ms % 10));
+        }
+        else
+        {
+            buf[pos++] = (char) ('0' + ms);
+        }
+
+        return new string(buf[..pos]);
+    }
+
+    public static void FormatTime(ref Utf16ValueStringBuilder sb, float totalSeconds, bool precise = false)
+    {
+        var negative = totalSeconds < 0;
+        var total    = Math.Abs(totalSeconds);
+
+        var totalSecondsInt = (int) total;
+        var hours           = totalSecondsInt / 3600;
+        var minutes         = (totalSecondsInt / 60) % 60;
+        var seconds         = totalSecondsInt % 60;
+
+        var fractional = total - totalSecondsInt;
+        var ms         = precise ? (int) (fractional * 1000) : (int) (fractional * 10);
+
+        if (negative) sb.Append('-');
+
+        if (hours > 0)
+        {
+            sb.Append(hours);
+            sb.Append(':');
+        }
+
+        AppendPadded2(ref sb, minutes);
+
+        sb.Append(':');
+        AppendPadded2(ref sb, seconds);
+        sb.Append('.');
+
+        if (precise)
+            AppendPadded3(ref sb, ms);
+        else
+            sb.Append((char) ('0' + ms));
+    }
+
+    private static void AppendPadded2(ref Utf16ValueStringBuilder sb, int value)
+    {
+        sb.Append((char) ('0' + (value / 10)));
+        sb.Append((char) ('0' + (value % 10)));
+    }
+
+    private static void AppendPadded3(ref Utf16ValueStringBuilder sb, int value)
+    {
+        sb.Append((char) ('0' + (value / 100)));
+        sb.Append((char) ('0' + ((value / 10) % 10)));
+        sb.Append((char) ('0' + (value % 10)));
     }
 
     public static string GetTrackName(int track, bool ignoreNumber = false)
     {
         return track switch
         {
-            < 0 or >= MAX_TRACK   => throw new IndexOutOfRangeException($"Track out of range. [0, {MAX_TRACK})"),
+            < 0 or >= TimerConstants.MAX_TRACK =>
+                throw new IndexOutOfRangeException($"Track out of range. [0, {TimerConstants.MAX_TRACK})"),
             0                     => "Main",
             > 0 when ignoreNumber => "Bonus",
             > 0                   => $"Bonus {track}",

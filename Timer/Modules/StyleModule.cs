@@ -14,7 +14,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
- 
+
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -28,29 +28,28 @@ using Sharp.Shared.HookParams;
 using Sharp.Shared.Listeners;
 using Sharp.Shared.Objects;
 using Sharp.Shared.Types;
-using Source2Surf.Timer.Managers;
-using Source2Surf.Timer.Managers.Player;
-using Source2Surf.Timer.Modules.Style;
-using Source2Surf.Timer.Modules.Timer;
-using Source2Surf.Timer.Modules.Zone;
+using Sharp.Shared.Units;
+using Source2Surf.Timer.Shared;
+using Source2Surf.Timer.Shared.Interfaces;
+using Source2Surf.Timer.Shared.Interfaces.Listeners;
+using Source2Surf.Timer.Shared.Models.Style;
+using Source2Surf.Timer.Shared.Models.Timer;
+using Source2Surf.Timer.Shared.Models.Zone;
 
 namespace Source2Surf.Timer.Modules;
 
 internal interface IStyleModule
 {
-    delegate void OnStyleLoadedDelegate(IReadOnlyList<StyleSetting> styles);
+    void RegisterListener(IStyleModuleListener listener);
 
-    delegate void OnClientStyleChangedDelegate(IGamePlayer player, int oldStyle, int newStyle);
-
-    event OnStyleLoadedDelegate        OnStyleConfigLoaded;
-    event OnClientStyleChangedDelegate OnClientStyleChanged;
+    void UnregisterListener(IStyleModuleListener listener);
 
     StyleSetting GetStyleSetting(int style);
 
     int GetStyleCount();
 }
 
-internal class StyleModule : IModule, IStyleModule, IGameListener
+internal class StyleModule : IModule, IStyleModule, IGameListener, ITimerModuleListener, IZoneModuleListener
 {
     private readonly InterfaceBridge _bridge;
 
@@ -59,9 +58,10 @@ internal class StyleModule : IModule, IStyleModule, IGameListener
     private readonly ICommandManager _commandManager;
 
     private readonly IZoneModule          _zoneModule;
-    private readonly ITimerModule         _timerModule;
+    private          ITimerModule         _timerModule = null!;
     private readonly IMapInfoModule       _mapInfoModule;
     private readonly ILogger<StyleModule> _logger;
+    private readonly ListenerHub<IStyleModuleListener> _listenerHub;
 
     private List<StyleSetting> _styles = [];
 
@@ -76,21 +76,28 @@ internal class StyleModule : IModule, IStyleModule, IGameListener
 
     // ReSharper restore InconsistentNaming
 
+    // Cached last-applied style key to skip redundant Set() calls across players.
+    // Combines style index + inStartZone flag into a single value.
+    // Only when the composite key changes do we call Set() on all ConVars.
+    private int  _lastStyleIndex = -1;
+    private bool _lastInStartZone;
+
     public StyleModule(InterfaceBridge      bridge,
                        ICommandManager      commandManager,
                        IZoneModule          zoneModule,
-                       ITimerModule         timerModule,
                        IMapInfoModule       mapInfoModule,
                        ILogger<StyleModule> logger)
     {
         _bridge         = bridge;
         _commandManager = commandManager;
         _zoneModule     = zoneModule;
-        _timerModule    = timerModule;
         _mapInfoModule  = mapInfoModule;
-        _logger         = logger;
+        _logger      = logger;
+        _listenerHub = new ListenerHub<IStyleModuleListener>(logger);
 
-        _styleConfigPath = Path.Combine(bridge.TimerDataPath, "styles.jsonc");
+        var configDir = Path.Combine(bridge.SharpPath, "configs");
+        Directory.CreateDirectory(configDir);
+        _styleConfigPath = Path.Combine(configDir, "timer-styles.jsonc");
 
         sv_autobunnyhopping   = InitializeConVar("sv_autobunnyhopping");
         sv_accelerate         = InitializeConVar("sv_accelerate");
@@ -116,13 +123,13 @@ internal class StyleModule : IModule, IStyleModule, IGameListener
         _bridge.HookManager.PlayerWalkMove.InstallForward(OnPlayerWalkMove);
         _bridge.HookManager.PlayerSpawnPost.InstallForward(OnPlayerSpawn);
 
-        _timerModule.OnPlayerTimerStart += OnPlayerTimerStart;
-
         return true;
     }
 
     public void Shutdown()
     {
+        _commandManager.ClearStyleCommands();
+
         sv_autobunnyhopping.Flags   |= ConVarFlags.Replicated;
         sv_accelerate.Flags         |= ConVarFlags.Replicated;
         sv_friction.Flags           |= ConVarFlags.Replicated;
@@ -136,10 +143,16 @@ internal class StyleModule : IModule, IStyleModule, IGameListener
         _bridge.HookManager.PlayerGetMaxSpeed.RemoveHookPre(OnPlayerGetMaxSpeed);
         _bridge.HookManager.PlayerWalkMove.RemoveForward(OnPlayerWalkMove);
         _bridge.HookManager.PlayerSpawnPost.RemoveForward(OnPlayerSpawn);
+
+        _timerModule.UnregisterListener(this);
+        _zoneModule.UnregisterListener(this);
     }
 
     public void OnPostInit(ServiceProvider provider)
     {
+        _timerModule = provider.GetRequiredService<ITimerModule>();
+        _timerModule.RegisterListener(this);
+        _zoneModule.RegisterListener(this);
         LoadStyleConfig();
     }
 
@@ -198,14 +211,21 @@ internal class StyleModule : IModule, IStyleModule, IGameListener
         var service = @params.Service;
         var style   = _styles[mainTimer.Style];
 
-        sv_airaccelerate.Set(style.CustomAirAccelerate ? style.AirAccelerate : _mapInfoModule.GetDefaultAirAccelerate());
+        var inStartZone = mainTimer.InZone == EZoneType.Start;
 
-        sv_autobunnyhopping.Set(mainTimer.InZone != EZoneType.Start && style.AutoBhop);
+        if (mainTimer.Style != _lastStyleIndex || inStartZone != _lastInStartZone)
+        {
+            var airAccel = style.CustomAirAccelerate ? style.AirAccelerate : _mapInfoModule.GetDefaultAirAccelerate();
+            sv_airaccelerate.Set(airAccel);
+            sv_autobunnyhopping.Set(!inStartZone && style.AutoBhop);
+            sv_accelerate.Set(style.Accelerate);
+            sv_friction.Set(style.Friction);
+            sv_air_max_wishspeed.Set(style.WishSpeed);
+            sv_enablebunnyhopping.Set(style.AllowBunnyhopping);
 
-        sv_accelerate.Set(style.Accelerate);
-        sv_friction.Set(style.Friction);
-        sv_air_max_wishspeed.Set(style.WishSpeed);
-        sv_enablebunnyhopping.Set(style.AllowBunnyhopping);
+            _lastStyleIndex  = mainTimer.Style;
+            _lastInStartZone = inStartZone;
+        }
 
         var mv = @params.Info;
 
@@ -249,7 +269,7 @@ internal class StyleModule : IModule, IStyleModule, IGameListener
         ReplicateClientCvars(client, info.Style);
     }
 
-    private void OnPlayerTimerStart(IPlayerController controller, IPlayerPawn pawn, ITimerInfo info)
+    public void OnPlayerTimerStart(IPlayerController controller, IPlayerPawn pawn, ITimerInfo info)
     {
         var slot = controller.PlayerSlot;
 
@@ -259,6 +279,47 @@ internal class StyleModule : IModule, IStyleModule, IGameListener
         }
 
         var style = _styles[info.Style];
+
+        sv_autobunnyhopping.ReplicateToClient(client, style.AutoBhop.ToString());
+    }
+
+    public void OnZoneStartTouch(IZoneInfo zoneInfo, IPlayerController controller, IPlayerPawn pawn)
+    {
+        if (zoneInfo.ZoneType != EZoneType.Start)
+        {
+            return;
+        }
+
+        var slot = controller.PlayerSlot;
+
+        if (_bridge.ClientManager.GetGameClient(slot) is not { } client || client.IsFakeClient)
+        {
+            return;
+        }
+
+        sv_autobunnyhopping.ReplicateToClient(client, false.ToString());
+    }
+
+    public void OnZoneEndTouch(IZoneInfo zoneInfo, IPlayerController controller, IPlayerPawn pawn)
+    {
+        if (zoneInfo.ZoneType != EZoneType.Start)
+        {
+            return;
+        }
+
+        var slot = controller.PlayerSlot;
+
+        if (_bridge.ClientManager.GetGameClient(slot) is not { } client || client.IsFakeClient)
+        {
+            return;
+        }
+
+        if (_timerModule.GetTimerInfo(slot) is not { } timerInfo)
+        {
+            return;
+        }
+
+        var style = _styles[timerInfo.Style];
 
         sv_autobunnyhopping.ReplicateToClient(client, style.AutoBhop.ToString());
     }
@@ -275,6 +336,8 @@ internal class StyleModule : IModule, IStyleModule, IGameListener
 
     private void LoadStyleConfig()
     {
+        _commandManager.ClearStyleCommands();
+
         _styles = [new ()];
 
         if (!File.Exists(_styleConfigPath))
@@ -299,16 +362,16 @@ internal class StyleModule : IModule, IStyleModule, IGameListener
 
                 File.WriteAllText(_styleConfigPath, JsonSerializer.Serialize(_styles, Utils.SerializerOptions));
             }
-            else if (_styles.Count > Utils.MAX_STYLE)
+            else if (_styles.Count > TimerConstants.MAX_STYLE)
             {
                 var count = _styles.Count;
 
                 _logger.LogWarning("Current style count {current} exceeds allowed count {max}, removing excess styles.",
                                    count,
-                                   Utils.MAX_STYLE);
+                                   TimerConstants.MAX_STYLE);
 
-                var numToRemove = count - Utils.MAX_STYLE;
-                _styles.RemoveRange(Utils.MAX_STYLE, numToRemove);
+                var numToRemove = count - TimerConstants.MAX_STYLE;
+                _styles.RemoveRange(TimerConstants.MAX_STYLE, numToRemove);
             }
         }
         catch (Exception ex)
@@ -319,7 +382,7 @@ internal class StyleModule : IModule, IStyleModule, IGameListener
     end:
         AddStyleCommands();
 
-        OnStyleConfigLoaded?.Invoke(_styles);
+        NotifyStyleConfigLoaded(_styles);
     }
 
     private void AddStyleCommands()
@@ -338,19 +401,30 @@ internal class StyleModule : IModule, IStyleModule, IGameListener
 
             continue;
 
-            ECommandAction OnStyleCommand(IGamePlayer player, StringCommand _)
+            ECommandAction OnStyleCommand(PlayerSlot slot, StringCommand _)
             {
-                var client = player.Client;
+                var client = _bridge.ClientManager.GetGameClient(slot);
 
-                if (_timerModule.GetTimerInfo(player.Slot) is not { } timerInfo
-                    || _timerModule.GetStageTimerInfo(player.Slot) is not { } stageTimer
-                    || player.Controller is not { } controller)
+                if (client is null)
+                {
+                    return ECommandAction.Handled;
+                }
+
+                var controller = client.GetPlayerController();
+
+                if (controller is not { IsValidEntity: true })
+                {
+                    return ECommandAction.Handled;
+                }
+
+                if (_timerModule.GetTimerInfo(slot) is not { } timerInfo
+                    || _timerModule.GetStageTimerInfo(slot) is not { } stageTimer)
                 {
                     return ECommandAction.Handled;
                 }
 
                 var oldStyle = timerInfo.Style;
-                OnClientStyleChanged?.Invoke(player, oldStyle, styleIndex);
+                NotifyClientStyleChanged(slot, oldStyle, styleIndex);
                 timerInfo.ChangeStyle(styleIndex);
                 stageTimer.ChangeStyle(styleIndex);
                 controller.Respawn();
@@ -385,8 +459,41 @@ internal class StyleModule : IModule, IStyleModule, IGameListener
     public int ListenerVersion  => IGameListener.ApiVersion;
     public int ListenerPriority => 0;
 
-    public event IStyleModule.OnStyleLoadedDelegate? OnStyleConfigLoaded;
-    public event IStyleModule.OnClientStyleChangedDelegate? OnClientStyleChanged;
+    public void RegisterListener(IStyleModuleListener listener)
+        => _listenerHub.Register(listener);
+
+    public void UnregisterListener(IStyleModuleListener listener)
+        => _listenerHub.Unregister(listener);
+
+    private void NotifyStyleConfigLoaded(IReadOnlyList<StyleSetting> styles)
+    {
+        foreach (var listener in _listenerHub.Snapshot)
+        {
+            try
+            {
+                listener.OnStyleConfigLoaded(styles);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogError(exception, "Error when calling OnStyleConfigLoaded listener");
+            }
+        }
+    }
+
+    private void NotifyClientStyleChanged(PlayerSlot slot, int oldStyle, int newStyle)
+    {
+        foreach (var listener in _listenerHub.Snapshot)
+        {
+            try
+            {
+                listener.OnClientStyleChanged(slot, oldStyle, newStyle);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogError(exception, "Error when calling OnClientStyleChanged listener");
+            }
+        }
+    }
 
     public StyleSetting GetStyleSetting(int style)
     {

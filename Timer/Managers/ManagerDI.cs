@@ -16,6 +16,12 @@
  */
 
 using Microsoft.Extensions.DependencyInjection;
+using Source2Surf.Timer.Managers.Command;
+using Source2Surf.Timer.Managers.Patch;
+using Source2Surf.Timer.Managers.Player;
+using Source2Surf.Timer.Managers.Replay;
+using Source2Surf.Timer.Managers.Request;
+using Source2Surf.Timer.Shared.Interfaces;
 
 namespace Source2Surf.Timer.Managers;
 
@@ -23,12 +29,18 @@ internal static class ManagerDi
 {
     public static void AddManagerService(this IServiceCollection services)
     {
-        services.ImplSingleton<IRequestManager, IManager, RequestManagerLiteDB>();
+        services.AddSingleton<RequestManagerLiteDB>();
+        services.ImplSingleton<IRequestManager, IManager, RequestManagerProxy>();
 
         services.ImplSingleton<IInlineHookManager, IManager, InlineHookManager>();
+        services.ImplSingleton<IPatchManager, IManager, PatchManager>();
         services.ImplSingleton<IEventHookManager, IManager, EventHookManager>();
 
         services.ImplSingleton<IPlayerManager, IManager, PlayerManager>();
-        services.ImplSingleton<ICommandManager, IManager, CommandManager>();
+
+        services.AddSingleton<CommandManager>();
+        services.ImplSingleton<ICommandManager, IManager, CommandManagerProxy>();
+
+        services.AddSingleton<ReplayProviderProxy>();
     }
 }

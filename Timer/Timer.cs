@@ -23,7 +23,11 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Sharp.Shared;
 using Source2Surf.Timer.Managers;
+using Source2Surf.Timer.Managers.Command;
+using Source2Surf.Timer.Managers.Replay;
+using Source2Surf.Timer.Managers.Request;
 using Source2Surf.Timer.Modules;
+using Source2Surf.Timer.Shared.Interfaces;
 
 [assembly: DisableRuntimeMarshalling]
 
@@ -35,13 +39,14 @@ public class Timer : IModSharpModule
     private readonly ILogger<Timer>          _logger;
     private readonly ServiceProvider         _serviceProvider;
     private readonly CancellationTokenSource _token;
+    private int                              _shutdownState;
 
-    public Timer(ISharedSystem sharedSystem,
-        string?                dllPath,
-        string?                sharpPath,
-        Version?               version,
-        IConfiguration?        coreConfiguration,
-        bool                   hotReload)
+    public Timer(ISharedSystem   shared,
+                 string?         dllPath,
+                 string?         sharpPath,
+                 Version?        version,
+                 IConfiguration? coreConfiguration,
+                 bool            hotReload)
     {
         ArgumentNullException.ThrowIfNull(dllPath);
         ArgumentNullException.ThrowIfNull(sharpPath);
@@ -58,18 +63,18 @@ public class Timer : IModSharpModule
                                          dllPath,
                                          sharpPath,
                                          version,
-                                         sharedSystem,
+                                         shared,
                                          coreConfiguration,
                                          hotReload,
                                          token.Token,
-                                         sharedSystem.GetModSharp()
-                                                     .HasCommandLine("-debug"));
+                                         shared.GetModSharp()
+                                               .HasCommandLine("-debug"));
 
-        var factory = sharedSystem.GetLoggerFactory();
+        var factory = shared.GetLoggerFactory();
         var logger  = factory.CreateLogger<Timer>();
 
-        var gameData = sharedSystem.GetModSharp()
-                                   .GetGameData();
+        var gameData = shared.GetModSharp()
+                             .GetGameData();
 
         gameData.Register("timer.games");
 
@@ -83,7 +88,7 @@ public class Timer : IModSharpModule
 
         services.AddSingleton(bridge);
         services.AddSingleton(factory);
-        services.AddSingleton(sharedSystem);
+        services.AddSingleton(shared);
         services.AddSingleton(gameData);
         /*services.AddSingleton<IConfiguration>(configuration);*/
         /*ConfigureDebugServices(services, bridge);*/
@@ -105,6 +110,11 @@ public class Timer : IModSharpModule
         {
             if (service.Init())
             {
+#if DEBUG
+                _logger.LogInformation("Init service {service}!",
+                                       service.GetType()
+                                              .FullName);
+#endif
                 continue;
             }
 
@@ -119,6 +129,11 @@ public class Timer : IModSharpModule
         {
             if (service.Init())
             {
+#if DEBUG
+                _logger.LogInformation("Init module {service}!",
+                                       service.GetType()
+                                              .FullName);
+#endif
                 continue;
             }
 
@@ -156,8 +171,50 @@ public class Timer : IModSharpModule
         return true;
     }
 
+    public void PostInit()
+    {
+        RefreshRequestManager();
+        RefreshCommandManager();
+        RefreshReplayProvider();
+    }
+
+    public void OnLibraryConnected(string moduleIdentity)
+    {
+        RefreshRequestManager();
+        RefreshReplayProvider();
+
+        if (moduleIdentity.Equals(ICommandManager.Identity, StringComparison.Ordinal))
+        {
+            RefreshCommandManager();
+        }
+    }
+
+    public void OnLibraryDisconnect(string moduleIdentity)
+    {
+        if (moduleIdentity.Equals(IRequestManager.Identity, StringComparison.Ordinal))
+        {
+            SwitchRequestManagerToLiteDb();
+        }
+        else if (moduleIdentity.Equals(ICommandManager.Identity, StringComparison.Ordinal))
+        {
+            SwitchCommandManagerToFallback();
+        }
+    }
+
+    public void OnAllModulesLoaded()
+    {
+        RefreshRequestManager();
+        RefreshCommandManager();
+        RefreshReplayProvider();
+    }
+
     public void Shutdown()
     {
+        if (Interlocked.Exchange(ref _shutdownState, 1) != 0)
+        {
+            return;
+        }
+
         try
         {
             _serviceProvider.GetRequiredService<IGameData>()
@@ -197,6 +254,19 @@ public class Timer : IModSharpModule
 
             // ignored
         }
+        finally
+        {
+            try
+            {
+                _serviceProvider.Dispose();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error when disposing ServiceProvider");
+            }
+
+            _token.Dispose();
+        }
     }
 
     private static void ConfigureServices(IServiceCollection services)
@@ -209,4 +279,57 @@ public class Timer : IModSharpModule
 
     public T GetService<T>()
         => _serviceProvider.GetService<T>() ?? throw new ("Failed to get service");
+
+    private void RefreshRequestManager()
+    {
+        if (_serviceProvider.GetService<IRequestManager>() is RequestManagerProxy proxy)
+        {
+            proxy.RefreshManager();
+
+            return;
+        }
+
+        _logger.LogWarning("IRequestManager is not RequestManagerProxy, skip refresh.");
+    }
+
+    private void SwitchRequestManagerToLiteDb()
+    {
+        if (_serviceProvider.GetService<IRequestManager>() is RequestManagerProxy proxy)
+        {
+            proxy.UseFallback();
+
+            return;
+        }
+
+        _logger.LogWarning("IRequestManager is not RequestManagerProxy, cannot force LiteDB fallback.");
+    }
+
+    private void RefreshCommandManager()
+    {
+        if (_serviceProvider.GetService<ICommandManager>() is CommandManagerProxy proxy)
+        {
+            proxy.RefreshManager();
+
+            return;
+        }
+
+        _logger.LogWarning("ICommandManager is not CommandManagerProxy, skip refresh.");
+    }
+
+    private void SwitchCommandManagerToFallback()
+    {
+        if (_serviceProvider.GetService<ICommandManager>() is CommandManagerProxy proxy)
+        {
+            proxy.UseFallback();
+
+            return;
+        }
+
+        _logger.LogWarning("ICommandManager is not CommandManagerProxy, cannot force fallback.");
+    }
+
+    private void RefreshReplayProvider()
+    {
+        _serviceProvider.GetService<ReplayProviderProxy>()?.RefreshProvider();
+    }
 }

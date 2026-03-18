@@ -18,6 +18,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using Source2Surf.Timer.Shared.Models.Replay;
 
 namespace Source2Surf.Timer.Modules.Replay;
 
@@ -106,16 +107,51 @@ internal sealed class ReplayFrameBuffer : IReadOnlyList<ReplayFrameData>
         _head   = 0;
     }
 
-    public IEnumerator<ReplayFrameData> GetEnumerator()
-    {
-        for (var i = 0; i < Count; i++)
-        {
-            var realIndex = (_head + i) % _buffer.Length;
-            yield return _buffer[realIndex];
-        }
-    }
+    public Enumerator GetEnumerator()
+        => new (this);
+
+    IEnumerator<ReplayFrameData> IEnumerable<ReplayFrameData>.GetEnumerator()
+        => GetEnumerator();
 
     IEnumerator IEnumerable.GetEnumerator()
         => GetEnumerator();
+
+    public struct Enumerator : IEnumerator<ReplayFrameData>
+    {
+        private readonly ReplayFrameBuffer _buffer;
+        private int                        _index;
+
+        internal Enumerator(ReplayFrameBuffer buffer)
+        {
+            _buffer = buffer;
+            _index  = -1;
+        }
+
+        public ReplayFrameData Current
+        {
+            get
+            {
+                var realIndex = (_buffer._head + _index) % _buffer._buffer.Length;
+                return _buffer._buffer[realIndex];
+            }
+        }
+
+        object IEnumerator.Current => Current;
+
+        public bool MoveNext()
+        {
+            _index++;
+            return _index < _buffer.Count;
+        }
+
+        public void Reset()
+        {
+            _index = -1;
+        }
+
+        public void Dispose()
+        {
+        }
+    }
 }
 

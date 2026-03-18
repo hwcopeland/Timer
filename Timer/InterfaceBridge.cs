@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Source2Surf/Timer
  * Copyright (C) 2025 Nukoooo and Kxnrl
  *
@@ -81,18 +81,19 @@ internal class InterfaceBridge
             Directory.CreateDirectory(TimerDataPath);
         }
 
-        ModSharp            = sharedSystem.GetModSharp();
-        ConVarManager       = sharedSystem.GetConVarManager();
-        EventManager        = sharedSystem.GetEventManager();
-        ClientManager       = sharedSystem.GetClientManager();
-        EntityManager       = sharedSystem.GetEntityManager();
-        FileManager         = sharedSystem.GetFileManager();
-        HookManager         = sharedSystem.GetHookManager();
-        SchemaManager       = sharedSystem.GetSchemaManager();
-        TransmitManager     = sharedSystem.GetTransmitManager();
-        PhysicsQueryManager = sharedSystem.GetPhysicsQueryManager();
-        LoggerFactory       = sharedSystem.GetLoggerFactory();
-        Modules             = sharedSystem.GetLibraryModuleManager();
+        ModSharp             = sharedSystem.GetModSharp();
+        ConVarManager        = sharedSystem.GetConVarManager();
+        EventManager         = sharedSystem.GetEventManager();
+        ClientManager        = sharedSystem.GetClientManager();
+        EntityManager        = sharedSystem.GetEntityManager();
+        FileManager          = sharedSystem.GetFileManager();
+        HookManager          = sharedSystem.GetHookManager();
+        SchemaManager        = sharedSystem.GetSchemaManager();
+        TransmitManager      = sharedSystem.GetTransmitManager();
+        PhysicsQueryManager  = sharedSystem.GetPhysicsQueryManager();
+        LoggerFactory        = sharedSystem.GetLoggerFactory();
+        Modules              = sharedSystem.GetLibraryModuleManager();
+        LibraryModuleManager = sharedSystem.GetLibraryModuleManager();
     }
 
     public string DllPath { get; }
@@ -114,16 +115,17 @@ internal class InterfaceBridge
     public IModSharp             ModSharp { get; }
     public ILibraryModuleManager Modules  { get; }
 
-    public IConVarManager       ConVarManager       { get; }
-    public IEventManager        EventManager        { get; }
-    public IClientManager       ClientManager       { get; }
-    public IEntityManager       EntityManager       { get; }
-    public IFileManager         FileManager         { get; }
-    public IHookManager         HookManager         { get; }
-    public ISchemaManager       SchemaManager       { get; }
-    public ITransmitManager     TransmitManager     { get; }
-    public IPhysicsQueryManager PhysicsQueryManager { get; }
-    public ILoggerFactory       LoggerFactory       { get; }
+    public IConVarManager        ConVarManager        { get; }
+    public IEventManager         EventManager         { get; }
+    public IClientManager        ClientManager        { get; }
+    public IEntityManager        EntityManager        { get; }
+    public IFileManager          FileManager          { get; }
+    public IHookManager          HookManager          { get; }
+    public ISchemaManager        SchemaManager        { get; }
+    public ITransmitManager      TransmitManager      { get; }
+    public IPhysicsQueryManager  PhysicsQueryManager  { get; }
+    public ILoggerFactory        LoggerFactory        { get; }
+    public ILibraryModuleManager LibraryModuleManager { get; }
 
     public IGameRules     GameRules  => ModSharp.GetGameRules();
     public IGlobalVars    GlobalVars => ModSharp.GetGlobals();

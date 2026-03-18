@@ -18,7 +18,7 @@
 using System;
 using Sharp.Shared.Enums;
 using Sharp.Shared.Types;
-using Source2Surf.Timer.Managers.Player;
+using Sharp.Shared.Units;
 
 // ReSharper disable CheckNamespace
 namespace Source2Surf.Timer.Modules;
@@ -31,11 +31,12 @@ internal unsafe partial class MiscModule
         _commandManager.AddClientChatCommand("usp",   OnCommandGiveWeapon);
         _commandManager.AddClientChatCommand("glock", OnCommandGiveWeapon);
         _commandManager.AddClientChatCommand("knife", OnCommandGiveWeapon);
+        _commandManager.AddClientChatCommand("spec",  OnCommandSpec);
     }
 
-    private ECommandAction OnCommandGiveWeapon(IGamePlayer player, StringCommand command)
+    private ECommandAction OnCommandGiveWeapon(PlayerSlot slot, StringCommand command)
     {
-        if (_bridge.EntityManager.FindPlayerPawnBySlot(player.Slot) is not { } basePawn
+        if (_bridge.EntityManager.FindPlayerPawnBySlot(slot) is not { } basePawn
             || basePawn.AsPlayer() is not { IsAlive: true } pawn)
         {
             return ECommandAction.Handled;
@@ -62,6 +63,32 @@ internal unsafe partial class MiscModule
             pawn.GiveNamedItem(command.CommandName.Equals("glock", StringComparison.OrdinalIgnoreCase)
                                    ? EconItemId.Glock
                                    : EconItemId.UspSilencer);
+        }
+
+        return ECommandAction.Handled;
+    }
+
+    private ECommandAction OnCommandSpec(PlayerSlot slot, StringCommand command)
+    {
+        if (_bridge.EntityManager.FindPlayerPawnBySlot(slot) is not { } basePawn)
+        {
+            return ECommandAction.Handled;
+        }
+
+        if (basePawn.AsPlayer() is { IsAlive: true } player)
+        {
+            player.ChangeTeam(CStrikeTeam.Spectator);
+        }
+
+        if (basePawn.AsObserver() is { } observer && observer.GetObserverService() is { } observerService)
+        {
+            observerService.ObserverMode = observerService.ObserverLastMode = ObserverMode.InEye;
+
+            if (_replayModule.GetReplayBotByIndex(0) is { } replayBot
+                && _bridge.EntityManager.FindPlayerPawnBySlot(replayBot.Slot)?.AsPlayerPawn() is { } botPawn)
+            {
+                observerService.ObserverTarget = botPawn.Handle;
+            }
         }
 
         return ECommandAction.Handled;

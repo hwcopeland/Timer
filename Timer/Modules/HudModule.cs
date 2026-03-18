@@ -25,7 +25,12 @@ using Sharp.Shared.Objects;
 using Sharp.Shared.Types;
 using Sharp.Shared.Units;
 using Source2Surf.Timer.Modules.Replay;
-using Source2Surf.Timer.Modules.Timer;
+using Source2Surf.Timer.Shared;
+using Source2Surf.Timer.Shared.Interfaces.Listeners;
+using Source2Surf.Timer.Shared.Interfaces.Modules;
+using Source2Surf.Timer.Shared.Models.Replay;
+using Source2Surf.Timer.Shared.Models.Timer;
+using Source2Surf.Timer.Shared.Models.Zone;
 
 namespace Source2Surf.Timer.Modules;
 
@@ -33,28 +38,50 @@ internal interface IHudModule
 {
 }
 
-internal class HudModule : IModule, IHudModule
+internal class HudModule : IModule, IHudModule, ITimerModuleListener, IZoneModuleListener
 {
+    private const float HudUpdateInterval = 0.10f;
+
     private readonly InterfaceBridge _bridge;
 
     private readonly ITimerModule  _timerModule;
     private readonly IReplayModule _replayModule;
     private readonly IRecordModule _recordModule;
+    private readonly IZoneModule   _zoneModule;
 
     private readonly ILogger<HudModule> _logger;
+
+    private static readonly float[] NextHudUpdateTime = new float[PlayerSlot.MaxPlayerCount];
+
+    // Cached WRCP diff from the last completed stage, shown inline after the main timer
+    private readonly float?[] _lastStageDelta = new float?[PlayerSlot.MaxPlayerCount];
+
+    // ReSharper disable InconsistentNaming
+    private readonly IGameEvent show_survival_respawn_status_event;
+
+    // ReSharper restore InconsistentNaming
 
     public HudModule(InterfaceBridge    bridge,
                      ITimerModule       timerModule,
                      IReplayModule      replayModule,
                      IRecordModule      recordModule,
+                     IZoneModule        zoneModule,
                      ILogger<HudModule> logger)
     {
         _bridge       = bridge;
         _timerModule  = timerModule;
         _replayModule = replayModule;
         _recordModule = recordModule;
+        _zoneModule   = zoneModule;
 
         _logger = logger;
+
+        show_survival_respawn_status_event = bridge.EventManager.CreateEvent("show_survival_respawn_status", true)
+                                             ?? throw new
+                                                 NullReferenceException("Failed to create show_survival_respawn_status event, this should never happen?!?!?!");
+
+        show_survival_respawn_status_event.SetInt("duration", 1);
+        show_survival_respawn_status_event.SetInt("userid", -1);
     }
 
     public bool Init()
@@ -63,13 +90,47 @@ internal class HudModule : IModule, IHudModule
 
         _bridge.ModSharp.InstallGameFrameHook(null, OnGameFramePost);
 
+        _timerModule.RegisterListener(this);
+        _zoneModule.RegisterListener(this);
+
         return true;
     }
 
     public void Shutdown()
     {
+        show_survival_respawn_status_event.Dispose();
+        _timerModule.UnregisterListener(this);
+        _zoneModule.UnregisterListener(this);
+
         _bridge.HookManager.PlayerRunCommand.RemoveHookPost(OnPlayerRunCommandPost);
         _bridge.ModSharp.RemoveGameFrameHook(null, OnGameFramePost);
+    }
+
+    public void OnPlayerTimerStart(IPlayerController controller, IPlayerPawn pawn, ITimerInfo timerInfo)
+    {
+        _lastStageDelta[controller.PlayerSlot] = null;
+    }
+
+    public void OnZoneStartTouch(IZoneInfo info, IPlayerController controller, IPlayerPawn pawn)
+    {
+        if (info.ZoneType == EZoneType.Start)
+        {
+            _lastStageDelta[controller.PlayerSlot] = null;
+        }
+    }
+
+    public void OnPlayerStageTimerFinish(IPlayerController controller, IPlayerPawn pawn, IStageTimerInfo stageTimerInfo)
+    {
+        var stage = stageTimerInfo.Stage;
+
+        if (_recordModule.GetWR(stageTimerInfo.Style, stageTimerInfo.Track, stage) is { } stageWr)
+        {
+            _lastStageDelta[controller.PlayerSlot] = stageTimerInfo.Time - stageWr.Time;
+        }
+        else
+        {
+            _lastStageDelta[controller.PlayerSlot] = null;
+        }
     }
 
     private void OnGameFramePost(bool arg1, bool arg2, bool arg3)
@@ -91,6 +152,17 @@ internal class HudModule : IModule, IHudModule
             return;
         }
 
+        var slot = client.Slot;
+        var now  = _bridge.GlobalVars.CurTime;
+        var next = NextHudUpdateTime[slot];
+
+        if (now < next && next - now <= TimerConstants.TickInterval * 2)
+        {
+            return;
+        }
+
+        NextHudUpdateTime[slot] = now + HudUpdateInterval;
+
         var pawn = param.Pawn;
 
         if (pawn.AsObserver() is { } observer && observer.GetObserverService() is { } observerService)
@@ -111,7 +183,7 @@ internal class HudModule : IModule, IHudModule
 
             if (targetController.IsFakeClient)
             {
-                if (_replayModule.GetReplayBotData(targetController.PlayerSlot) is not { } replayData)
+                if (_replayModule.GetReplayBotData(targetController.PlayerSlot) is not ReplayBotData replayData)
                 {
                     return;
                 }
@@ -131,8 +203,6 @@ internal class HudModule : IModule, IHudModule
             return;
         }
 
-        var slot = client.Slot;
-
         if (_timerModule.GetTimerInfo(slot) is not { } timerInfo)
         {
             return;
@@ -145,137 +215,235 @@ internal class HudModule : IModule, IHudModule
     {
         var velocity = pawn.GetAbsVelocity();
 
-        using var sb = ZString.CreateStringBuilder(true);
+        var sb = ZString.CreateStringBuilder(true);
 
-        sb.AppendFormat("<span color='#00FF00'>{0}</span>", Utils.FormatTime(timerInfo.Time));
-
-        /*
-        sb.Append("&nbsp;&nbsp;");
-
-        sb.AppendFormat("<span color='#D3D3D3'>[#{0}]</span>",
-                        _recordModule.GetRankForTime(timerInfo.Style, timerInfo.Track, timerInfo.Time));
-        */
-
-        sb.Append("<br>");
-
-        sb.AppendFormat("<span color='#FFFFFF'>{0}&nbsp;&nbsp;&nbsp;&nbsp;",
-                        (int) velocity.Length2D());
-
-        sb.AppendFormat("Sync: {0}%</span>", (timerInfo.Sync * 100).ToString("F1"));
-
-        sb.Append("<br>");
-
-        var pbTime = "N/A";
-        var wrTime = "N/A";
-
-        if (_recordModule.GetPlayerRecord(slot, timerInfo.Style, timerInfo.Track) is { } pb)
+        try
         {
-            pbTime = Utils.FormatTime(pb.Time, true);
-        }
+            // Compute WR diff: prefer checkpoint-based, fall back to last completed stage WRCP diff
+            var    wrCheckpoints = _recordModule.GetWRCheckpoints(timerInfo.Style, timerInfo.Track);
+            var    cpIndex       = timerInfo.Checkpoint;
+            float? wrDelta;
 
-        if (_recordModule.GetWRTime(timerInfo.Style, timerInfo.Track) is { } wr)
+            if (wrCheckpoints is { Count: > 0 } && cpIndex >= 1 && cpIndex <= wrCheckpoints.Count)
+            {
+                var wrCpTime = wrCheckpoints[cpIndex - 1].Time;
+
+                var playerCpTime = timerInfo.Checkpoints.Count >= cpIndex
+                    ? timerInfo.Checkpoints[cpIndex - 1].Time
+                    : timerInfo.Time;
+
+                wrDelta = playerCpTime - wrCpTime;
+            }
+            else
+            {
+                wrDelta = _lastStageDelta[slot];
+            }
+
+            // Timer color based on status: running=green, paused=yellow, stopped=white
+            var timeColor = timerInfo.Status switch
+            {
+                ETimerStatus.Running => "#00FF00",
+                ETimerStatus.Paused  => "#FFD700",
+                _                    => "#FFFFFF",
+            };
+
+            sb.AppendFormat("<span color='{0}'>", timeColor);
+            Utils.FormatTime(ref sb, timerInfo.Time);
+
+            if (timerInfo.Status == ETimerStatus.Paused)
+            {
+                sb.Append(" ‖ PAUSED");
+            }
+
+            sb.Append("</span>");
+
+            // WR diff inline after time
+            if (wrDelta is { } delta)
+            {
+                if (delta >= 0f)
+                {
+                    sb.Append(" <span color='#FF4444'>(WR +");
+                    Utils.FormatTime(ref sb, delta, true);
+                }
+                else
+                {
+                    sb.Append(" <span color='#44FF44'>(WR -");
+                    Utils.FormatTime(ref sb, MathF.Abs(delta), true);
+                }
+
+                sb.Append(")</span>");
+            }
+
+            sb.Append("<br>");
+
+            sb.AppendFormat("<span color='#FFFFFF'>{0}&nbsp;&nbsp;&nbsp;&nbsp;",
+                            (int) velocity.Length2D());
+
+            sb.Append("Sync: ");
+            AppendFixedPoint1(ref sb, timerInfo.Sync * 100);
+            sb.Append("%</span>");
+
+            sb.Append("<br>");
+
+            sb.Append("<span color='#808080'>PB: ");
+
+            if (_recordModule.GetPlayerRecord(slot, timerInfo.Style, timerInfo.Track) is { } pb)
+            {
+                Utils.FormatTime(ref sb, pb.Time, true);
+            }
+            else
+            {
+                sb.Append("N/A");
+            }
+
+            sb.Append(" ‖ WR: ");
+
+            if (_recordModule.GetWRTime(timerInfo.Style, timerInfo.Track) is { } wr)
+            {
+                Utils.FormatTime(ref sb, wr, true);
+            }
+            else
+            {
+                sb.Append("N/A");
+            }
+
+            sb.Append("</span>");
+
+            PrintHtmlToPlayer(client, sb.ToString());
+        }
+        finally
         {
-            wrTime = Utils.FormatTime(wr, true);
+            sb.Dispose();
         }
-
-        sb.AppendFormat("<span color='#808080'>PB: {0} ‖ WR: {1}</span>",
-                        pbTime,
-                        wrTime,
-                        true);
-
-        PrintHtmlToPlayer(client, sb.ToString());
     }
 
     private void PrintReplayHud(IGameClient client, IPlayerPawn pawn, ReplayBotData bot)
     {
         if (bot.Status == EReplayBotStatus.Idle)
         {
-            PrintHtmlToPlayer(client,
-                              $"<span class='fontSize-xl' color='{GetRainbowHex(_bridge.GlobalVars.CurTime)}'>IDLE</span>");
+            var idleSb = ZString.CreateStringBuilder(true);
+            try
+            {
+                idleSb.Append("<span class='fontSize-xl' color='");
+                AppendRainbowHex(ref idleSb, _bridge.GlobalVars.CurTime);
+                idleSb.Append("'>IDLE</span>");
+                PrintHtmlToPlayer(client, idleSb.ToString());
+            }
+            finally
+            {
+                idleSb.Dispose();
+            }
 
             return;
         }
 
-        using var    sb              = ZString.CreateStringBuilder(true);
+        var          sb              = ZString.CreateStringBuilder(true);
         const string colorLabel      = "#AAAAAA";
         const string colorData       = "#E0E0E0";
         const string colorStageBot   = "#2196F3";
         const string colorFullRunBot = "#FFD700";
         const string colorSubtleInfo = "#B0B0B0";
 
-        if (bot.Stage > 0)
+        try
         {
-            sb.AppendFormat("<span color='{0}'>Stage {1} Replay Bot</span>", colorStageBot, bot.Stage);
-        }
-        else
-        {
-            sb.AppendFormat("<span color='{0}'>Replay Bot</span>", colorFullRunBot);
-
-            var currentStage = bot.GetCurrentStage();
-
-            if (currentStage > 0)
+            if (bot.Stage > 0)
             {
-                sb.AppendFormat(" <span color='{0}'>(Stage {1})</span>", colorSubtleInfo, currentStage);
+                sb.AppendFormat("<span color='{0}'>Stage {1} Replay Bot</span>", colorStageBot, bot.Stage);
             }
+            else
+            {
+                sb.AppendFormat("<span color='{0}'>Replay Bot</span>", colorFullRunBot);
+
+                var currentStage = bot.GetCurrentStage();
+
+                if (currentStage > 0)
+                {
+                    sb.AppendFormat(" <span color='{0}'>(Stage {1})</span>", colorSubtleInfo, currentStage);
+                }
+            }
+
+            sb.Append("<br>");
+
+            var header = bot.Header!;
+
+            sb.AppendFormat("<span color='{0}'>Player:</span> <span color='{1}'>{2}</span>",
+                            colorLabel,
+                            colorData,
+                            header.PlayerName);
+
+            sb.Append("<br>");
+
+            sb.AppendFormat("<span color='{0}'>Time: </span>", colorLabel);
+            var timedFrame = Math.Clamp(bot.CurrentFrame, header.PreFrame, header.PostFrame);
+
+            sb.AppendFormat("<span color='{0}'>", colorData);
+            Utils.FormatTime(ref sb, TimerConstants.TickInterval * (timedFrame - header.PreFrame));
+            sb.Append('/');
+            Utils.FormatTime(ref sb, bot.Time);
+            sb.Append("</span>");
+
+            sb.Append("<br>");
+
+            sb.AppendFormat("<span color='{0}'>Speed:</span> <span color='{1}'>{2}</span>",
+                            colorLabel,
+                            colorData,
+                            (int) MathF.Round(pawn.GetAbsVelocity().Length2D()));
+
+            PrintHtmlToPlayer(client, sb.ToString());
         }
-
-        sb.Append("<br>");
-
-        var header = bot.Header!;
-
-        sb.AppendFormat("<span color='{0}'>Player:</span> <span color='{1}'>{2}</span>",
-                        colorLabel,
-                        colorData,
-                        header.PlayerName);
-
-        sb.Append("<br>");
-
-        sb.AppendFormat("<span color='{0}'>Time: </span>", colorLabel);
-        var timedFrame = Math.Clamp(bot.CurrentFrame, header.PreFrame, header.PostFrame);
-
-        sb.AppendFormat("<span color='{0}'>{1}/{2}</span>",
-                        colorData,
-                        Utils.FormatTime(Utils.TickInterval * (timedFrame - header.PreFrame)),
-                        Utils.FormatTime(bot.Time));
-
-        sb.Append("<br>");
-
-        sb.AppendFormat("<span color='{0}'>Speed:</span> <span color='{1}'>{2}</span>",
-                        colorLabel,
-                        colorData,
-                        (int) MathF.Round(pawn.GetAbsVelocity().Length2D()));
-
-        PrintHtmlToPlayer(client, sb.ToString());
+        finally
+        {
+            sb.Dispose();
+        }
     }
 
-    private static string GetRainbowHex(float curtime)
+    private static void AppendRainbowHex(ref Utf16ValueStringBuilder sb, float curtime)
     {
         const float frequency = 3.5f;
         const float amplitude = 127f;
         const float center    = 128f;
-        const float twoPi     = MathF.PI * 2f;
 
-        var red   = (MathF.Sin((frequency * curtime) + 0f)                  * amplitude) + center;
-        var green = (MathF.Sin((frequency * curtime) + (twoPi        / 3f)) * amplitude) + center;
-        var blue  = (MathF.Sin((frequency * curtime) + ((twoPi * 2f) / 3f)) * amplitude) + center;
+        const float sin120 = 0.86602540f;
+        const float cos120 = -0.5f;
 
-        var r = (int) Math.Clamp(red,   0f, 255f);
-        var g = (int) Math.Clamp(green, 0f, 255f);
-        var b = (int) Math.Clamp(blue,  0f, 255f);
+        var (sin, cos) = MathF.SinCos(frequency * curtime);
 
-        return $"#{r:X2}{g:X2}{b:X2}";
+        var rBase = sin;
+        var gBase = (sin * cos120) + (cos * sin120);
+        var bBase = (sin * cos120) - (cos * sin120);
+        var r     = (int) ((rBase * amplitude) + center);
+        var g     = (int) ((gBase * amplitude) + center);
+        var b     = (int) ((bBase * amplitude) + center);
+
+        sb.Append('#');
+        AppendHex2(ref sb, r);
+        AppendHex2(ref sb, g);
+        AppendHex2(ref sb, b);
+    }
+
+    private static void AppendHex2(ref Utf16ValueStringBuilder sb, int value)
+    {
+        var h1 = (value >> 4) & 0xF;
+        var h2 = value        & 0xF;
+
+        sb.Append((char) (h1 < 10 ? h1 + '0' : h1 + ('A' - 10)));
+        sb.Append((char) (h2 < 10 ? h2 + '0' : h2 + ('A' - 10)));
+    }
+
+    private static void AppendFixedPoint1(ref Utf16ValueStringBuilder sb, float value)
+    {
+        var intPart      = (int) value;
+        var decimalDigit = (int) ((value - intPart) * 10);
+
+        sb.Append(intPart);
+        sb.Append('.');
+        sb.Append((char) ('0' + Math.Abs(decimalDigit)));
     }
 
     private void PrintHtmlToPlayer(IGameClient client, string html)
     {
-        if (_bridge.EventManager.CreateEvent("show_survival_respawn_status", true) is not { } e)
-        {
-            return;
-        }
+        show_survival_respawn_status_event.SetString("loc_token", html);
 
-        e.SetString("loc_token", html);
-        e.SetInt("duration", 1);
-        e.SetInt("userid",   client.UserId);
-        e.FireToClient(client);
+        show_survival_respawn_status_event.FireToClient(client);
     }
 }

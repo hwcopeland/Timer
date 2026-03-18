@@ -14,8 +14,9 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
- 
+
 using System;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Sharp.Shared.Enums;
 using Sharp.Shared.GameEntities;
@@ -24,7 +25,10 @@ using Sharp.Shared.Listeners;
 using Sharp.Shared.Objects;
 using Sharp.Shared.Types;
 using Source2Surf.Timer.Managers;
+using Source2Surf.Timer.Managers.Patch;
 using Source2Surf.Timer.Native;
+using Source2Surf.Timer.Shared.Interfaces;
+using Source2Surf.Timer.Shared.Interfaces.Modules;
 
 namespace Source2Surf.Timer.Modules;
 
@@ -36,6 +40,8 @@ internal unsafe partial class MiscModule : IModule, IMiscModule, IGameListener
 {
     private readonly InterfaceBridge     _bridge;
     private readonly ICommandManager     _commandManager;
+    private readonly IPatchManager       _patchManager;
+    private readonly IReplayModule       _replayModule;
     private readonly ILogger<MiscModule> _logger;
 
     // ReSharper disable InconsistentNaming
@@ -60,10 +66,14 @@ internal unsafe partial class MiscModule : IModule, IMiscModule, IGameListener
     public MiscModule(InterfaceBridge     bridge,
                       ICommandManager     commandManager,
                       IInlineHookManager  inlineHookManager,
+                      IPatchManager       patchManager,
+                      IReplayModule       replayModule,
                       ILogger<MiscModule> logger)
     {
         _bridge         = bridge;
         _commandManager = commandManager;
+        _patchManager   = patchManager;
+        _replayModule   = replayModule;
         _logger         = logger;
 
         CBaseEntity_m_vecVelocity_offset = bridge.SchemaManager.GetNetVarOffset("CBaseEntity", "m_vecVelocity");
@@ -94,6 +104,11 @@ internal unsafe partial class MiscModule : IModule, IMiscModule, IGameListener
         _bridge.HookManager.PlayerDropWeapon.InstallForward(OnPlayerDropWeapon);
 
         return true;
+    }
+
+    public void OnPostInit(ServiceProvider provider)
+    {
+        PatchTheNavCheck();
     }
 
     public void Shutdown()

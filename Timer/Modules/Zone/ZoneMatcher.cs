@@ -15,15 +15,19 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
  
-using System.Linq;
+using System;
+using System.Collections.Frozen;
 using System.Text.RegularExpressions;
 
 namespace Source2Surf.Timer.Modules.Zone;
 
 internal static partial class ZoneMatcher
 {
-    private static readonly string[] StartZoneName = ["map_start", "s1_start", "stage1_start", "timer_startzone", "zone_start"];
-    private static readonly string[] EndZoneName   = ["map_end", "timer_endzone", "zone_end"];
+    private static readonly FrozenSet<string> StartZoneName = FrozenSet.ToFrozenSet(
+        ["map_start", "s1_start", "stage1_start", "timer_startzone", "zone_start"], StringComparer.Ordinal);
+
+    private static readonly FrozenSet<string> EndZoneName = FrozenSet.ToFrozenSet(
+        ["map_end", "timer_endzone", "zone_end"], StringComparer.Ordinal);
 
     public static bool IsStartZone(string name)
         => StartZoneName.Contains(name);

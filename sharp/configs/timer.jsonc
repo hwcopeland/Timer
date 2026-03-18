@@ -1,0 +1,11 @@
+{
+  "database": {
+    "type": "mysql", // PostgreSQL
+    "host": "127.0.0.1",
+    "port": 3306,
+    "database_name": "timer",
+    "username": "root",
+    "password": "change_me"
+  },
+  "replay_storage_base_url": "https://your-replay-storage.example.com/replays"
+}

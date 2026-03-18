@@ -19,6 +19,7 @@ using System;
 using System.Runtime.CompilerServices;
 using Sharp.Shared.GameEntities;
 using Sharp.Shared.Types;
+using Source2Surf.Timer.Shared.Models.Zone;
 
 namespace Source2Surf.Timer.Modules.Zone;
 

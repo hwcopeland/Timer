@@ -14,24 +14,27 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
- 
+
 using System;
 using System.Collections.Generic;
 using Microsoft.Extensions.Logging;
 using Sharp.Shared.Enums;
 using Sharp.Shared.GameEntities;
 using Sharp.Shared.Types;
-using Source2Surf.Timer.Managers.Player;
+using Sharp.Shared.Units;
 using Source2Surf.Timer.Modules.Zone;
+using Source2Surf.Timer.Shared;
+using Source2Surf.Timer.Shared.Models.Zone;
 
 // ReSharper disable once CheckNamespace
 namespace Source2Surf.Timer.Modules;
 
 internal partial class ZoneModule
 {
-    private ECommandAction OnCommandZone(IGamePlayer player, StringCommand command)
+    private ECommandAction OnCommandZone(PlayerSlot slot, StringCommand command)
     {
-        if (player.Controller is not { IsValidEntity: true } controller
+        if (_bridge.ClientManager.GetGameClient(slot) is not { } client
+            || client.GetPlayerController() is not { IsValidEntity: true } controller
             || controller.GetPlayerPawn() is not { IsValidEntity: true, IsAlive: true } pawn)
         {
             return ECommandAction.Handled;
@@ -62,7 +65,7 @@ internal partial class ZoneModule
                 return ECommandAction.Handled;
             }
 
-            if (!int.TryParse(zoneOrTypeSpan[1..], out track) || track >= Utils.MAX_TRACK)
+            if (!int.TryParse(zoneOrTypeSpan[1..], out track) || track >= TimerConstants.MAX_TRACK)
             {
                 return ECommandAction.Handled;
             }
@@ -113,7 +116,7 @@ internal partial class ZoneModule
             buildInfo.SnapBeams[1] = snapBeam2;
         }
 
-        BuildZoneInfo[player.Slot] = buildInfo;
+        _buildZoneInfo[slot] = buildInfo;
 
         return ECommandAction.Handled;
     }

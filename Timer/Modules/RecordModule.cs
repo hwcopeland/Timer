@@ -17,30 +17,31 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Sharp.Shared.Enums;
 using Sharp.Shared.GameEntities;
 using Sharp.Shared.Listeners;
+using Sharp.Shared.Types;
 using Sharp.Shared.Units;
-using Source2Surf.Timer.Managers;
+using Source2Surf.Timer.Extensions;
 using Source2Surf.Timer.Managers.Player;
-using Source2Surf.Timer.Managers.Request.Models;
-using Source2Surf.Timer.Modules.Timer;
+using Source2Surf.Timer.Modules.Record;
+using Source2Surf.Timer.Shared.Interfaces;
+using Source2Surf.Timer.Shared.Interfaces.Listeners;
+using Source2Surf.Timer.Shared.Interfaces.Modules;
+using Source2Surf.Timer.Shared.Models;
+using Source2Surf.Timer.Shared.Models.Timer;
 
 namespace Source2Surf.Timer.Modules;
 
 internal interface IRecordModule
 {
-    delegate void OnPlayerRecordSavedDelegate(SteamID        playerSteamId,
-                                              string         playerName,
-                                              EAttemptResult recordType,
-                                              RunRecord      savedRecord,
-                                              RunRecord?     wrRecord,
-                                              RunRecord?     pbRecord);
+    void RegisterListener(IRecordModuleListener listener);
 
-    event OnPlayerRecordSavedDelegate OnPlayerRecordSaved;
-    event OnPlayerRecordSavedDelegate OnPlayerStageRecordSaved;
+    void UnregisterListener(IRecordModuleListener listener);
 
     int GetRankForTime(int style, int track, float time);
 
@@ -49,36 +50,48 @@ internal interface IRecordModule
     RunRecord? GetWR(int style, int track, int stage = 0);
 
     float? GetWRTime(int style, int track);
+
+    int GetTotalRecordCount(int style, int track);
+
+    IReadOnlyList<RunCheckpoint>? GetWRCheckpoints(int style, int track);
+
+    /// <summary>
+    /// Get the current session elapsed time (seconds) for a player on this map.
+    /// Returns 0 if the player has no active session.
+    /// </summary>
+    float GetSessionTime(PlayerSlot slot);
 }
 
-internal partial class RecordModule : IModule, IGameListener, IRecordModule
+internal partial class RecordModule : IModule, IGameListener, IRecordModule, ITimerModuleListener, IPlayerManagerListener
 {
     public int ListenerVersion  => IGameListener.ApiVersion;
     public int ListenerPriority => 0;
 
     private readonly InterfaceBridge       _bridge;
     private readonly ITimerModule          _timerModule;
+    private readonly IStyleModule          _styleModule;
     private readonly IPlayerManager        _playerManager;
     private readonly ICommandManager       _commandManager;
     private readonly IRequestManager       _request;
     private readonly IMapInfoModule        _mapInfo;
     private readonly ILogger<RecordModule> _logger;
 
-    /*private readonly ConcurrentDictionary<(int style, int track), List<float>> _mapRecordsCache = [];*/
+    // Sub-components
+    private readonly MapRecordCache                     _mapCache;
+    private readonly PlayerRecordCache                  _playerCache;
+    private readonly RecordSaver                        _saver;
+    private readonly TaskTracker                        _taskTracker;
+    private readonly ListenerHub<IRecordModuleListener> _listenerHub;
 
-    private readonly List<RunRecord>[,] _mapRecordsCache = new List<RunRecord>[Utils.MAX_STYLE, Utils.MAX_TRACK];
+    // Per-slot session start time (engine time when player joined this map)
+    private readonly double[] _sessionStartTime = new double[64];
 
-    private readonly List<RunRecord>[,,] _mapStageRecordsCache
-        = new List<RunRecord>[Utils.MAX_STYLE, Utils.MAX_TRACK, Utils.MAX_STAGE];
-
-    private readonly RunRecord?[,,] _playerRecordsCache
-        = new RunRecord[PlayerSlot.MaxPlayerSlot, Utils.MAX_STYLE, Utils.MAX_TRACK];
-
-    private readonly RunRecord?[,,,] _playerStageRecordsCache
-        = new RunRecord?[PlayerSlot.MaxPlayerSlot, Utils.MAX_STYLE, Utils.MAX_TRACK, Utils.MAX_STAGE];
+    // Late-resolved to avoid circular DI (ReplayRecorderModule depends on IRecordModule)
+    private IReplayRecorderModule _replayRecorder = null!;
 
     public RecordModule(InterfaceBridge       bridge,
                         ITimerModule          timerModule,
+                        IStyleModule          styleModule,
                         IPlayerManager        playerManager,
                         IRequestManager       request,
                         ICommandManager       commandManager,
@@ -87,58 +100,44 @@ internal partial class RecordModule : IModule, IGameListener, IRecordModule
     {
         _bridge         = bridge;
         _timerModule    = timerModule;
+        _styleModule    = styleModule;
         _playerManager  = playerManager;
         _request        = request;
         _commandManager = commandManager;
         _mapInfo        = mapInfoModule;
         _logger         = logger;
 
-        for (var s = 0; s < Utils.MAX_STYLE; s++)
-        {
-            for (var t = 0; t < Utils.MAX_TRACK; t++)
-            {
-                _mapRecordsCache[s, t] = [];
-            }
-        }
-
-        for (var style = 0; style < Utils.MAX_STYLE; style++)
-        {
-            for (var track = 0; track < Utils.MAX_TRACK; track++)
-            {
-                for (var stage = 0; stage < Utils.MAX_STAGE; stage++)
-                {
-                    _mapStageRecordsCache[style, track, stage] = [];
-                }
-            }
-        }
-
-        for (var i = 0; i < PlayerSlot.MaxPlayerSlot; i++)
-        {
-            for (var j = 0; j < Utils.MAX_STYLE; j++)
-            {
-                for (var k = 0; k < Utils.MAX_TRACK; k++)
-                {
-                    for (var l = 0; l < Utils.MAX_STAGE; l++)
-                    {
-                        _playerStageRecordsCache[i, j, k, l] = null;
-                    }
-
-                    _playerRecordsCache[i, j, k] = null;
-                }
-            }
-        }
+        _listenerHub = new ListenerHub<IRecordModuleListener>(logger);
+        _mapCache    = new MapRecordCache(logger);
+        _playerCache = new PlayerRecordCache(logger);
+        _saver       = new RecordSaver(bridge, request, styleModule, _mapCache, _playerCache, _listenerHub, logger);
+        _taskTracker = new TaskTracker(logger);
     }
 
     public bool Init()
     {
         _bridge.ModSharp.InstallGameListener(this);
 
-        _timerModule.OnPlayerFinishMap        += OnPlayerFinishMap;
-        _timerModule.OnPlayerStageTimerFinish += OnPlayerStageTimerFinish;
+        _timerModule.RegisterListener(this);
 
-        _playerManager.ClientPutInServer  += ClientPutInServer;
-        _playerManager.ClientDisconnected += OnClientDisconnected;
-        _playerManager.ClientInfoLoaded   += OnClientInfoLoaded;
+        _playerManager.RegisterListener(this);
+
+        _commandManager.AddServerCommand("timer_recalc_scores", OnCommandRecalcScores);
+
+        _commandManager.AddClientChatCommand("wr",      OnCommandWR);
+        _commandManager.AddClientChatCommand("pb",      OnCommandPB);
+        _commandManager.AddClientChatCommand("rank",    OnCommandRank);
+        _commandManager.AddClientChatCommand("top",     OnCommandTop);
+        _commandManager.AddClientChatCommand("recent",  OnCommandRecent);
+        _commandManager.AddClientChatCommand("cpr",      OnCommandCpr);
+        _commandManager.AddClientChatCommand("profile", OnCommandProfile);
+        _commandManager.AddClientChatCommand("stats",   OnCommandProfile);
+        _commandManager.AddClientChatCommand("swr",      OnCommandStageWR);
+        _commandManager.AddClientChatCommand("stagewr",  OnCommandStageWR);
+        _commandManager.AddClientChatCommand("btop",     OnCommandBonusTop);
+        _commandManager.AddClientChatCommand("bwr",      OnCommandBonusWR);
+        _commandManager.AddClientChatCommand("bpb",      OnCommandBonusPB);
+        _commandManager.AddClientChatCommand("spb",      OnCommandStagePB);
 
 #if DEBUG
         {
@@ -151,18 +150,18 @@ internal partial class RecordModule : IModule, IGameListener, IRecordModule
 
     public void OnPostInit(ServiceProvider provider)
     {
+        _replayRecorder = provider.GetRequiredService<IReplayRecorderModule>();
     }
 
     public void Shutdown()
     {
         _bridge.ModSharp.RemoveGameListener(this);
 
-        _timerModule.OnPlayerFinishMap        -= OnPlayerFinishMap;
-        _timerModule.OnPlayerStageTimerFinish -= OnPlayerStageTimerFinish;
+        _timerModule.UnregisterListener(this);
 
-        _playerManager.ClientPutInServer  -= ClientPutInServer;
-        _playerManager.ClientDisconnected -= OnClientDisconnected;
-        _playerManager.ClientInfoLoaded   -= OnClientInfoLoaded;
+        _playerManager.UnregisterListener(this);
+
+        _taskTracker.DrainPendingTasks();
     }
 
     public void OnGameActivate()
@@ -177,419 +176,342 @@ internal partial class RecordModule : IModule, IGameListener, IRecordModule
     {
         Task.Run(async () =>
         {
-            var currentMapInfo = _mapInfo.GetCurrentMapProfile();
-
-            var records      = await _request.GetMapRecords(currentMapInfo.MapId).ConfigureAwait(false);
-            var stageRecords = await _request.GetMapStageRecords(currentMapInfo.MapId).ConfigureAwait(false);
-
-            foreach (var record in records)
-            {
-                var track = record.Track;
-                var style = record.Style;
-
-                _mapRecordsCache[style, track].Add(record);
-            }
-
-            foreach (var record in stageRecords)
-            {
-                var track = record.Track;
-                var style = record.Style;
-                var stage = record.Stage;
-
-                _mapStageRecordsCache[style, track, stage].Add(record);
-            }
-
-            for (var style = 0; style < Utils.MAX_STYLE; style++)
-            {
-                for (var track = 0; track < Utils.MAX_TRACK; track++)
-                {
-                    for (var stage = 0; stage < Utils.MAX_STAGE; stage++)
-                    {
-                        _mapStageRecordsCache[style, track, stage].Sort();
-                    }
-
-                    _mapRecordsCache[style, track].Sort();
-                }
-            }
-        });
-    }
-
-    public void OnGameShutdown()
-    {
-        for (var style = 0; style < Utils.MAX_STYLE; style++)
-        {
-            for (var track = 0; track < Utils.MAX_TRACK; track++)
-            {
-                for (var stage = 0; stage < Utils.MAX_STAGE; stage++)
-                {
-                    _mapStageRecordsCache[style, track, stage].Clear();
-                }
-
-                _mapRecordsCache[style, track].Clear();
-            }
-        }
-    }
-
-    private static RecordRequest CreateRecordRequest(ITimerInfo timerInfo)
-    {
-        var recordRequest = new RecordRequest
-        {
-            Style   = timerInfo.Style,
-            Track   = timerInfo.Track,
-            Stage   = 0, // Default to 0 for main map, can be overridden for stages.
-            Time    = timerInfo.Time,
-            Jumps   = timerInfo.Jumps,
-            Strafes = timerInfo.Strafes,
-            Sync    = timerInfo.Sync,
-        };
-
-        for (var i = 0; i < timerInfo.Checkpoints.Count; i++)
-        {
-            var cp = timerInfo.Checkpoints[i];
-
-            var request = new RecordRequest.CheckpointRecord
-            {
-                CheckpointIndex = i,
-                Time            = cp.Time,
-                Sync            = cp.Sync,
-            };
-
-            request.SetAverageVelocity(cp.AverageVelocity);
-            request.SetTouchVelocity(cp.EndVelocity);
-
-            recordRequest.Checkpoints.Add(request);
-        }
-
-        return recordRequest;
-    }
-
-    private void OnPlayerFinishMap(IPlayerController controller, IPlayerPawn pawn, ITimerInfo timerInfo)
-    {
-        var slot = controller.PlayerSlot;
-
-        var player = _playerManager.GetPlayer(slot);
-
-        if (player is null)
-        {
-            using var scope = _logger.BeginScope("OnPlayerFinishMap");
-
-            _logger.LogError("player slot#{slot} has null GamePlayer???", slot);
-
-            return;
-        }
-
-        var steamId    = player.SteamId;
-        var playerName = player.Name;
-
-        var style      = timerInfo.Style;
-        var track      = timerInfo.Track;
-
-        var record   = _mapRecordsCache[style, track];
-        var wrRecord = record.Count > 0 ? record[0] : null;
-        var pbRecord = _playerRecordsCache[slot, style, track];
-
-        var currentMapProfile = _mapInfo.GetCurrentMapProfile();
-
-        var recordRequest = CreateRecordRequest(timerInfo);
-
-        Task.Run(async () =>
-        {
             try
             {
-                var (recordType, savedRecord) = await _request.AddPlayerRecord(player.DatabaseId,
-                                                                               currentMapProfile.MapId,
-                                                                               recordRequest)
-                                                              .ConfigureAwait(false);
+                var currentMapName = _bridge.GlobalVars.MapName;
+
+                var records = await RetryHelper.RetryAsync(
+                    () => _request.GetMapRecords(currentMapName),
+                    RetryHelper.IsTransient, _logger, "GetMapRecords"
+                ).ConfigureAwait(false);
+
+                var stageRecords = await RetryHelper.RetryAsync(
+                    () => _request.GetMapStageRecords(currentMapName),
+                    RetryHelper.IsTransient, _logger, "GetMapStageRecords"
+                ).ConfigureAwait(false);
+
+                // Load WR checkpoints for each (style, track) combination
+                var wrCheckpointMap = new Dictionary<(int style, int track), IReadOnlyList<RunCheckpoint>>();
+
+                var wrByTrack = records.GroupBy(r => (r.Style, r.Track));
+
+                foreach (var group in wrByTrack)
+                {
+                    var wr = group.OrderBy(r => r.Time).ThenBy(r => r.Id).FirstOrDefault();
+
+                    if (wr is not null)
+                    {
+                        var checkpoints = await RetryHelper.RetryAsync(
+                            () => _request.GetRecordCheckpoints(wr.Id),
+                            RetryHelper.IsTransient, _logger, "GetRecordCheckpoints"
+                        ).ConfigureAwait(false);
+
+                        wrCheckpointMap[(wr.Style, wr.Track)] = checkpoints;
+                    }
+                }
 
                 await _bridge.ModSharp.InvokeFrameActionAsync(() =>
                 {
-                    OnPlayerRecordSaved?.Invoke(steamId,
-                                                playerName,
-                                                recordType,
-                                                savedRecord,
-                                                wrRecord,
-                                                pbRecord);
+                    _mapCache.Clear();
+                    _mapCache.Populate(records, stageRecords);
 
-                    if (recordType < EAttemptResult.NewPersonalRecord)
+                    foreach (var ((style, track), checkpoints) in wrCheckpointMap)
                     {
-                        return;
+                        _mapCache.SetWRCheckpoints(style, track, checkpoints);
                     }
 
-                    if (_playerManager.GetPlayer(steamId) is { } client)
+                    foreach (var listener in _listenerHub.Snapshot)
                     {
-                        _logger.LogInformation("Found player {steamid}, setting record cache", steamId);
-                        _playerRecordsCache[client.Slot, style, track] = savedRecord;
-                    }
-                }).ConfigureAwait(false);
-
-                await UpdateMapRecord(style, track).ConfigureAwait(false);
-            }
-            catch (Exception e)
-            {
-                _logger.LogError(e, "Error when saving record");
-            }
-        });
-    }
-
-    private void OnPlayerStageTimerFinish(IPlayerController controller,
-                                          IPlayerPawn       pawn,
-                                          IStageTimerInfo   timerInfo)
-    {
-        var slot = controller.PlayerSlot;
-
-        var player = _playerManager.GetPlayer(slot);
-
-        if (player is null)
-        {
-            using var scope = _logger.BeginScope("OnPlayerStageTimerFinish");
-            _logger.LogError("player slot#{slot} has null GamePlayer???", slot);
-
-            return;
-        }
-
-        var steamId    = player.SteamId;
-        var playerName = player.Name;
-
-        var style = timerInfo.Style;
-        var track = timerInfo.Track;
-        var stage = timerInfo.Stage;
-
-        var record   = _mapStageRecordsCache[style, track, stage];
-        var wrRecord = record.Count > 0 ? record[0] : null;
-        var pbRecord = _playerStageRecordsCache[slot, style, track, stage];
-
-        var currentMapProfile = _mapInfo.GetCurrentMapProfile();
-
-        var recordRequest = CreateRecordRequest(timerInfo);
-        recordRequest.Stage = timerInfo.Stage;
-
-        Task.Run(async () =>
-        {
-            var (recordType, savedRecord) = await _request.AddPlayerStageRecord(player.DatabaseId,
-                                                                                currentMapProfile.MapId,
-                                                                                recordRequest)
-                                                          .ConfigureAwait(false);
-
-            await _bridge.ModSharp.InvokeFrameActionAsync(() =>
-            {
-                OnPlayerStageRecordSaved?.Invoke(steamId,
-                                                 playerName,
-                                                 recordType,
-                                                 savedRecord,
-                                                 wrRecord,
-                                                 pbRecord);
-
-                if (_playerManager.GetPlayer(steamId) is { } client)
-                {
-                    _playerStageRecordsCache[client.Slot, style, track, stage] = savedRecord;
-                }
-            }).ConfigureAwait(false);
-
-            await UpdateMapStageRecord(style, track, stage).ConfigureAwait(false);
-        });
-    }
-
-    private void ClientPutInServer(IGamePlayer player)
-    {
-        if (player.IsFakeClient)
-        {
-            return;
-        }
-
-        var slot = player.Slot;
-
-        ClearPlayerRecord(slot);
-    }
-
-    private void OnClientDisconnected(IGamePlayer player)
-    {
-        if (player.IsFakeClient)
-        {
-            return;
-        }
-
-        var slot = player.Slot;
-
-        ClearPlayerRecord(slot);
-    }
-
-    private void OnClientInfoLoaded(IGamePlayer player)
-    {
-        var currentMapInfo = _mapInfo.GetCurrentMapProfile();
-
-        Task.Run(async () =>
-        {
-            try
-            {
-                var records = await _request.GetPlayerRecords(player.DatabaseId, currentMapInfo.MapId).ConfigureAwait(false);
-
-                var stageRecords = await _request.GetPlayerStageRecords(player.DatabaseId, currentMapInfo.MapId)
-                                                 .ConfigureAwait(false);
-
-                await _bridge.ModSharp.InvokeFrameActionAsync(() =>
-                {
-                    if (_bridge.ClientManager.GetGameClient(player.SteamId) is not { } client)
-                    {
-                        return;
-                    }
-
-                    foreach (var record in records)
-                    {
-                        var style = record.Style;
-                        var track = record.Track;
-
-                        _playerRecordsCache[client.Slot, style, track] = record;
-                    }
-
-                    foreach (var record in stageRecords)
-                    {
-                        var style = record.Style;
-                        var track = record.Track;
-                        var stage = record.Stage;
-
-                        _playerStageRecordsCache[client.Slot, style, track, stage] = record;
+                        try
+                        {
+                            listener.OnMapRecordsLoaded();
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Error when calling OnMapRecordsLoaded listener");
+                        }
                     }
                 });
             }
             catch (Exception e)
             {
-                _logger.LogError(e, "Error when loading player time for {stemaid}", player.SteamId);
+                _logger.LogError(e, "Error when loading map records on server activate");
             }
-        });
+        }, _bridge.CancellationToken);
     }
 
-    public event IRecordModule.OnPlayerRecordSavedDelegate? OnPlayerRecordSaved;
-    public event IRecordModule.OnPlayerRecordSavedDelegate? OnPlayerStageRecordSaved;
-
-    public int GetRankForTime(int style, int track, float time)
+    public void OnGameShutdown()
     {
-        var records = _mapRecordsCache[style, track];
-        var count   = records.Count;
-
-        var low  = 0;
-        var high = count;
-
-        while (low < high)
+        // Flush playtime for all connected players before map change
+        for (var i = 0; i < 64; i++)
         {
-            var mid = (int) ((uint) low + (uint) high) >> 1;
-
-            if (records[mid].Time < time)
+            if (_sessionStartTime[i] <= 0)
             {
-                low = mid + 1;
+                continue;
+            }
+
+            var playerSlot = new PlayerSlot(i);
+
+            if (_bridge.ClientManager.GetGameClient(playerSlot) is { IsFakeClient: false } client)
+            {
+                FlushPlayerMapStats(playerSlot, client.SteamId);
             }
             else
             {
-                high = mid;
+                _sessionStartTime[i] = 0;
             }
         }
 
-        return low + 1;
+        _mapCache.Clear();
     }
 
-    public RunRecord? GetPlayerRecord(PlayerSlot slot, int style, int track, int stage = 0)
+    public void OnPlayerFinishMap(IPlayerController controller, IPlayerPawn pawn, ITimerInfo timerInfo)
     {
-        switch (stage)
-        {
-            case <= 0:
-            {
-                if (_playerRecordsCache[slot, style, track] is { } rec)
-                {
-                    return rec;
-                }
+        var slot = controller.PlayerSlot;
 
-                return null;
+        var client = _bridge.ClientManager.GetGameClient(slot);
+
+        if (client is null)
+        {
+            using var scope = _logger.BeginScope("OnPlayerFinishMap");
+
+            _logger.LogError("player slot#{slot} has null IGameClient???", slot);
+
+            return;
+        }
+
+        _taskTracker.Track(_saver.SaveMapRecordAsync(slot,
+                                                     client.SteamId,
+                                                     client.Name,
+                                                     _bridge.GlobalVars.MapName,
+                                                     timerInfo,
+                                                     attemptId: _replayRecorder.GetAttemptId(slot),
+                                                     _bridge.CancellationToken));
+    }
+
+    public void OnPlayerStageTimerFinish(IPlayerController controller,
+                                         IPlayerPawn       pawn,
+                                         IStageTimerInfo   timerInfo)
+    {
+        var slot = controller.PlayerSlot;
+
+        var client = _bridge.ClientManager.GetGameClient(slot);
+
+        if (client is null)
+        {
+            using var scope = _logger.BeginScope("OnPlayerStageTimerFinish");
+            _logger.LogError("player slot#{slot} has null IGameClient???", slot);
+
+            return;
+        }
+
+        _taskTracker.Track(_saver.SaveStageRecordAsync(slot,
+                                                       client.SteamId,
+                                                       client.Name,
+                                                       _bridge.GlobalVars.MapName,
+                                                       timerInfo,
+                                                       attemptId: _replayRecorder.GetAttemptId(slot),
+                                                       _bridge.CancellationToken));
+    }
+
+    public void OnClientPutInServer(PlayerSlot slot)
+    {
+        if (_bridge.ClientManager.GetGameClient(slot) is { IsFakeClient: true })
+        {
+            return;
+        }
+
+        _playerCache.Clear(slot);
+        _sessionStartTime[(int)slot] = _bridge.ModSharp.EngineTime();
+    }
+
+    public void OnClientDisconnected(PlayerSlot slot)
+    {
+        if (_bridge.ClientManager.GetGameClient(slot) is not { IsFakeClient: false } client)
+        {
+            return;
+        }
+
+        FlushPlayerMapStats(slot, client.SteamId);
+        _sessionStartTime[(int)slot] = 0; // player left, clear session
+
+        _playerCache.Clear(slot);
+    }
+
+    public void OnClientInfoLoaded(SteamID steamId)
+    {
+        var client = _bridge.ClientManager.GetGameClient(steamId);
+
+        if (client is null || client.IsFakeClient)
+        {
+            return;
+        }
+
+        var mapName = _bridge.GlobalVars.MapName;
+
+        _taskTracker.Track(Task.Run(async () =>
+                                    {
+                                        try
+                                        {
+                                            _logger.LogWarning("Getting record for {steamid}", steamId);
+
+                                            var records = await RetryHelper.RetryAsync(
+                                                () => _request.GetPlayerRecords(steamId, mapName),
+                                                RetryHelper.IsTransient, _logger, "GetPlayerRecords"
+                                            ).ConfigureAwait(false);
+
+                                            var stageRecords = await RetryHelper.RetryAsync(
+                                                () => _request.GetPlayerStageRecords(steamId, mapName),
+                                                RetryHelper.IsTransient, _logger, "GetPlayerStageRecords"
+                                            ).ConfigureAwait(false);
+
+                                            await _bridge.ModSharp.InvokeFrameActionAsync(() =>
+                                            {
+                                                if (_bridge.ClientManager.GetGameClient(steamId)
+                                                    is not { } currentClient)
+                                                {
+                                                    return;
+                                                }
+
+                                                _playerCache.Populate(currentClient.Slot, records, stageRecords);
+                                            });
+                                        }
+                                        catch (Exception e)
+                                        {
+                                            _logger.LogError(e, "Error when loading player time for {steamId}", steamId);
+                                        }
+                                    },
+                                    _bridge.CancellationToken));
+    }
+
+    public void RegisterListener(IRecordModuleListener listener)
+        => _listenerHub.Register(listener);
+
+    public void UnregisterListener(IRecordModuleListener listener)
+        => _listenerHub.Unregister(listener);
+
+    // IRecordModule delegation to sub-components
+
+    public int GetRankForTime(int style, int track, float time) =>
+        _mapCache.GetRankForTime(style, track, time);
+
+    public RunRecord? GetPlayerRecord(PlayerSlot slot, int style, int track, int stage = 0) =>
+        _playerCache.GetRecord(slot, style, track, stage);
+
+    public RunRecord? GetWR(int style, int track, int stage = 0) =>
+        _mapCache.GetWR(style, track, stage);
+
+    public float? GetWRTime(int style, int track) =>
+        _mapCache.GetWRTime(style, track);
+
+    public int GetTotalRecordCount(int style, int track) =>
+        _mapCache.GetRecords(style, track).Count;
+
+    public IReadOnlyList<RunCheckpoint>? GetWRCheckpoints(int style, int track) =>
+        _mapCache.GetWRCheckpoints(style, track);
+
+    public float GetSessionTime(PlayerSlot slot)
+    {
+        var start = _sessionStartTime[(int)slot];
+        return start > 0 ? (float)(_bridge.ModSharp.EngineTime() - start) : 0f;
+    }
+
+    private void FlushPlayerMapStats(PlayerSlot slot, SteamID steamId)
+    {
+        var index = (int)slot;
+        var start = _sessionStartTime[index];
+
+        if (start <= 0)
+        {
+            return;
+        }
+
+        var delta   = (float)(_bridge.ModSharp.EngineTime() - start);
+        var mapName = _bridge.GlobalVars.MapName;
+
+        _sessionStartTime[index] = _bridge.ModSharp.EngineTime(); // reset for next session segment
+
+        if (delta <= 0f)
+        {
+            return;
+        }
+
+        _taskTracker.Track(Task.Run(async () =>
+        {
+            try
+            {
+                await _request.UpdatePlayerMapStatsAsync(steamId, mapName, delta).ConfigureAwait(false);
             }
-            case >= Utils.MAX_STAGE:
-                throw new IndexOutOfRangeException($"Stage index is out of range [1, {Utils.MAX_STAGE}), current: {stage}");
-            default:
+            catch (Exception e)
             {
-                if (_playerStageRecordsCache[slot, style, track, stage] is { } stageRec)
-                {
-                    return stageRec;
-                }
-
-                return null;
+                _logger.LogError(e, "Error when flushing player map stats for {steamId}", steamId);
             }
-        }
+        }, _bridge.CancellationToken));
     }
 
-    public RunRecord? GetWR(int style, int track, int stage = 0)
+    /// <summary>
+    ///     ServerCommand: timer_recalc_scores [mapname|all]
+    ///     Manually trigger score recalculation. No args = current map, with arg = specified map, "all" = every map.
+    /// </summary>
+    private ECommandAction OnCommandRecalcScores(StringCommand arg)
     {
-        switch (stage)
+        // Build the style factor dictionary
+        var styleCount   = _styleModule.GetStyleCount();
+        var styleFactors = new Dictionary<int, double>(styleCount);
+
+        for (var i = 0; i < styleCount; i++)
         {
-            case <= 0:
-            {
-                var records = _mapRecordsCache[style, track];
-
-                return records.Count > 0 ? records[0] : null;
-            }
-            case >= Utils.MAX_STAGE:
-                throw new IndexOutOfRangeException($"Stage index is out of range [1, {Utils.MAX_STAGE}), current: {stage}");
-            default:
-            {
-                var records = _mapStageRecordsCache[style, track, stage];
-
-                return records.Count > 0 ? records[0] : null;
-            }
-        }
-    }
-
-    public float? GetWRTime(int style, int track)
-    {
-        var rec = _mapRecordsCache[style, track];
-
-        if (rec.Count > 0)
-        {
-            return rec[0].Time;
+            styleFactors[i] = _styleModule.GetStyleSetting(i).ScoreFactor;
         }
 
-        return null;
-    }
+        var target = arg.ArgCount > 1 ? arg.GetArg(1) : _bridge.GlobalVars.MapName;
+        var isAll  = string.Equals(target, "all", StringComparison.OrdinalIgnoreCase);
 
-    private async Task UpdateMapRecord(int style, int track)
-    {
-        try
-        {
-            var records = await _request.GetMapRecords(_mapInfo.GetCurrentMapProfile().MapId, style, track)
-                                        .ConfigureAwait(false);
+        Task.Run(async () =>
+                 {
+                     try
+                     {
+                         if (isAll)
+                         {
+                             var mapNames = await RetryHelper.RetryAsync(
+                                 () => _request.GetAllMapNamesAsync(),
+                                 RetryHelper.IsTransient, _logger, "GetAllMapNamesAsync"
+                             ).ConfigureAwait(false);
 
-            await _bridge.ModSharp.InvokeFrameActionAsync(() =>
-            {
-                _mapRecordsCache[style, track] = records;
-                _mapRecordsCache[style, track].Sort();
-            });
-        }
-        catch (Exception e)
-        {
-            _logger.LogError(e, "Error when trying to update map record with style {s}, track: {t}", style, track);
-        }
-    }
+                             var totalTracks = 0;
 
-    private async Task UpdateMapStageRecord(int style, int track, int stage)
-    {
-        var records = await _request.GetMapStageRecords(_mapInfo.GetCurrentMapProfile().MapId, style, track, stage)
-                                    .ConfigureAwait(false);
+                             foreach (var mapName in mapNames)
+                             {
+                                 totalTracks += await RetryHelper.RetryAsync(
+                                     () => _request.RecalculateMapScoresAsync(mapName, styleFactors),
+                                     RetryHelper.IsTransient, _logger, "RecalculateMapScoresAsync"
+                                 ).ConfigureAwait(false);
+                             }
 
-        await _bridge.ModSharp.InvokeFrameActionAsync(() =>
-        {
-            _mapStageRecordsCache[style, track, stage] = records;
-            _mapStageRecordsCache[style, track, stage].Sort();
-        });
-    }
+                             _logger
+                                 .LogInformation("Triggered score recalculation for ALL maps ({mapCount} maps, {trackCount} tracks queued)",
+                                                 mapNames.Count,
+                                                 totalTracks);
+                         }
+                         else
+                         {
+                             var count = await RetryHelper.RetryAsync(
+                                 () => _request.RecalculateMapScoresAsync(target, styleFactors),
+                                 RetryHelper.IsTransient, _logger, "RecalculateMapScoresAsync"
+                             ).ConfigureAwait(false);
 
-    private void ClearPlayerRecord(PlayerSlot slot)
-    {
-        for (var i = 0; i < Utils.MAX_STYLE; i++)
-        {
-            for (var j = 0; j < Utils.MAX_TRACK; j++)
-            {
-                for (var k = 0; k < Utils.MAX_STAGE; k++)
-                {
-                    _playerStageRecordsCache[slot, i, j, k] = null;
-                }
+                             _logger.LogInformation("Triggered score recalculation for map '{map}', {count} track(s) queued",
+                                                    target,
+                                                    count);
+                         }
+                     }
+                     catch (Exception e)
+                     {
+                         _logger.LogError(e, "Error when recalculating scores");
+                     }
+                 },
+                 _bridge.CancellationToken);
 
-                _playerRecordsCache[slot, i, j] = null;
-            }
-        }
+        return ECommandAction.Handled;
     }
 }

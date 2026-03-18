@@ -20,24 +20,19 @@ using System.Collections.Generic;
 using Sharp.Shared.GameEntities;
 using Sharp.Shared.Objects;
 using Sharp.Shared.Units;
+using Source2Surf.Timer.Shared.Models.Replay;
 
 namespace Source2Surf.Timer.Modules.Replay;
 
-internal enum EReplayBotStatus : byte
-{
-    Idle,
-    Start,
-    Running,
-    End,
-}
-
-internal class ReplayBotData
+internal class ReplayBotData : IReplayBotData
 {
     public required ReplayBotConfig Config { get; init; }
 
     public          EntityIndex       Index      { get; init; }
     public required IPlayerController Controller { get; init; }
     public required IGameClient       Client     { get; init; }
+
+    public PlayerSlot Slot => Client.Slot;
 
     public int   Track { get; set; } = -1;
     public int   Style { get; set; } = -1;

@@ -36,16 +36,14 @@ internal class PlayerFrameData
     public List<int> StageTimerStartTicks { get; } = [];
 
     public bool GrabbingPostFrame { get; set; } = false;
-    public bool IsSavingReplay    { get; set; } = false;
 
     public ReplayFrameBuffer Frames { get; set; } = [];
 
+    public int AttemptId { get; set; }
+
+    public PendingRecordResult? PendingMainRecordResult   { get; set; }
+    public Dictionary<int, PendingRecordResult> PendingStageRecordResults { get; } = [];
+
     public Guid? PostFrameTimer      { get; set; } = null;
     public Guid? StagePostFrameTimer { get; set; } = null;
-
-    public Guid?   PendingMainRunId    { get; set; }
-    public string? SavedMainReplayPath { get; set; }
-
-    public Dictionary<int, Guid> PendingStageRunIds { get; } = new ();
-    public Dictionary<int, string> SavedStageReplayPaths { get; } = new ();
 }

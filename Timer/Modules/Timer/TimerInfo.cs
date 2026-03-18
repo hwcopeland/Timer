@@ -14,62 +14,16 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
- 
+
 using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using Sharp.Shared.Types;
-using Source2Surf.Timer.Modules.Zone;
+using Source2Surf.Timer.Shared;
+using Source2Surf.Timer.Shared.Models.Timer;
+using Source2Surf.Timer.Shared.Models.Zone;
 
 namespace Source2Surf.Timer.Modules.Timer;
-
-internal interface ITimerInfo
-{
-    ETimerStatus Status { get; }
-
-    int    Jumps         { get; }
-    int    Strafes       { get; }
-    float  Time          { get; }
-    Vector StartVelocity { get; }
-    Vector AvgVelocity   { get; }
-    Vector EndVelocity   { get; }
-    Vector MaxVelocity   { get; }
-    float  Sync          { get; }
-
-    EZoneType                     InZone      { get; }
-    int                           Track       { get; }
-    int                           Style       { get; }
-    int                           Checkpoint  { get; }
-    IReadOnlyList<CheckpointInfo> Checkpoints { get; }
-
-    void ChangeStyle(int style);
-
-    void ChangeTrack(int track);
-}
-
-internal interface IStageTimerInfo : ITimerInfo
-{
-    int Stage { get; }
-}
-
-internal enum ETimerStatus
-{
-    Stopped,
-    Running,
-}
-
-internal class CheckpointInfo
-{
-    public uint TimerTick { get; set; }
-
-    public float Time => TimerTick * Utils.Tickrate;
-
-    public float Sync { get; set; }
-
-    public Vector StartVelocity   { get; set; }
-    public Vector AverageVelocity { get; set; }
-    public Vector EndVelocity     { get; set; }
-}
 
 internal class TimerInfo : ITimerInfo
 {
@@ -90,7 +44,7 @@ internal class TimerInfo : ITimerInfo
 
     public ETimerStatus Status { get; private set; } = ETimerStatus.Stopped;
 
-    public float Time => TimerTick * Utils.TickInterval;
+    public float Time => TimerTick * TimerConstants.TickInterval;
 
     public Vector AvgVelocity   { get; set; }
     public Vector EndVelocity   { get; set; }
@@ -136,6 +90,30 @@ internal class TimerInfo : ITimerInfo
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     protected internal bool IsTimerRunning()
         => Status == ETimerStatus.Running;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    protected internal bool IsTimerPaused()
+        => Status == ETimerStatus.Paused;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    protected internal bool PauseTimer()
+    {
+        if (Status != ETimerStatus.Running)
+            return false;
+
+        Status = ETimerStatus.Paused;
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    protected internal bool ResumeTimer()
+    {
+        if (Status != ETimerStatus.Paused)
+            return false;
+
+        Status = ETimerStatus.Running;
+        return true;
+    }
 
     public TimerInfo()
     {

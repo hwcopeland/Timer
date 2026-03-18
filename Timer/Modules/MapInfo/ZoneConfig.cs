@@ -21,8 +21,17 @@ namespace Source2Surf.Timer.Modules.MapInfo;
 
 internal record ZoneConfig
 {
-    [JsonPropertyName("max_prespeed")]
-    public float? PreSpeed { get; set; } = null;
+    /// <summary>
+    /// Speed cap override when entering the start zone. null = no override (falls back to GameMode default), 0 or negative = unlimited.
+    /// </summary>
+    [JsonPropertyName("enter_speed_limit")]
+    public float? EnterSpeedLimit { get; set; } = null;
+
+    /// <summary>
+    /// Speed cap override when leaving the start zone. null = no override (falls back to Style/GameMode default), 0 or negative = unlimited.
+    /// </summary>
+    [JsonPropertyName("exit_speed_limit")]
+    public float? ExitSpeedLimit { get; set; } = null;
 
     [JsonPropertyName("max_jumps")]
     public int? MaxJumps { get; set; } = null;

@@ -1,0 +1,32 @@
+[
+    // Replay bot config list.
+    // Add one object per bot rule.
+    {
+        // Enable/disable this replay bot rule.
+        "enabled": true,
+
+        // Bot type enum (EReplayBotType):
+        // 0 = Looping
+        "type": 0,
+
+        // Map scope enum (EReplayBotPlayType):
+        // 0 = All, 1 = MainOnly, 2 = BonusOnly
+        "play_type": 0,
+
+        // Style indexes this bot can play.
+        "styles": [
+            0
+        ],
+
+        // false = full-run replay bot, true = stage replay bot.
+        "stage_bot": false,
+
+        // Display name when bot is idle.
+        // Placeholders: {track}, {stage}, {style}, {time}
+        "idle_name": "{track}{stage} Replay Bot",
+
+        // Display name while replay is active.
+        // Placeholders: {track}, {stage}, {style}, {time}
+        "name": "{track}{stage} - {style} - {time}"
+    }
+]
