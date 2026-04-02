@@ -108,7 +108,14 @@ internal unsafe partial class MiscModule : IModule, IMiscModule, IGameListener
 
     public void OnPostInit(ServiceProvider provider)
     {
-        PatchTheNavCheck();
+        try
+        {
+            PatchTheNavCheck();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Nav check patch failed — skipping (non-fatal)");
+        }
     }
 
     public void Shutdown()

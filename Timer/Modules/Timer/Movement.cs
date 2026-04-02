@@ -76,32 +76,17 @@ internal partial class TimerModule
         var inMainStartZone  = timerInfo.InZone  == EZoneType.Start;
         var inStageStartZone = stageTimer.InZone == EZoneType.Stage;
 
-        if (!onGround && (inMainStartZone || inStageStartZone))
+        if (!onGround && inMainStartZone)
         {
-            var maxJumps    = _mapInfoModule.GetMaxPrejumps(timerInfo.Track);
-            var shouldBlock = false;
+            var maxJumps = _mapInfoModule.GetMaxPrejumps(timerInfo.Track);
 
-            // Check each timer independently based on which zone the player is in
-            if (inMainStartZone
-                && timerInfo.WasOnGround
+            // Only apply prejump limiter in main start zone — stage zones
+            // should allow bhopping so players keep momentum through stages.
+            if (timerInfo.WasOnGround
                 && timerInfo.OnGroundTick <= 10
                 && timerInfo.Jumps        >= maxJumps)
             {
-                timerInfo.Jumps = 0;
-                shouldBlock     = true;
-            }
-
-            if (inStageStartZone
-                && stageTimer.WasOnGround
-                && stageTimer.OnGroundTick <= 10
-                && stageTimer.Jumps        >= maxJumps)
-            {
-                stageTimer.Jumps = 0;
-                shouldBlock      = true;
-            }
-
-            if (shouldBlock)
-            {
+                timerInfo.Jumps    = 0;
                 arg.Velocity      = new ();
                 info->ForwardMove = 0;
                 info->SideMove    = 0;
