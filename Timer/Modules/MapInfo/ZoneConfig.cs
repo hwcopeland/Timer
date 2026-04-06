@@ -35,4 +35,7 @@ internal record ZoneConfig
 
     [JsonPropertyName("max_jumps")]
     public int? MaxJumps { get; set; } = null;
+
+    [JsonPropertyName("stage_zone")]
+    public ZoneConfig? StageZone { get; set; } = null;
 }
