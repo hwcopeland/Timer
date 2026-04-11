@@ -203,6 +203,9 @@ internal class ReplayPlaybackModule : IReplayPlaybackModule,
 
     public void OnMapRecordsLoaded()
     {
+        if (_hasNoBotParam)
+            return;
+
         var linkedToken = CancellationTokenSource.CreateLinkedTokenSource(_bridge.CancellationToken, _mapRecordLoadToken.Token);
 
         Task.Run(async () =>
