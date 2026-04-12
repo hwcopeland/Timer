@@ -158,6 +158,34 @@ internal class StyleModule : IModule, IStyleModule, IGameListener, ITimerModuleL
 
     public void OnServerActivate()
     {
+        // Force the default (style 0 = Normal) movement cvars on every map
+        // activation so bhop works from spawn before any player enters a
+        // timed zone. Without this, CS2 resets sv_enablebunnyhopping /
+        // sv_autobunnyhopping to their engine defaults (0) on map change,
+        // and Timer only applies the style-driven values from the
+        // OnProcessMovementPre hook — which early-returns until the player
+        // has an active timer state. Result: players spawn into a map with
+        // bhop disabled until they reach a zone, which is never for surf.
+        if (_styles.Count == 0)
+        {
+            return;
+        }
+
+        var defaultStyle = _styles[0];
+        var airAccel = defaultStyle.CustomAirAccelerate
+            ? defaultStyle.AirAccelerate
+            : _mapInfoModule.GetDefaultAirAccelerate();
+
+        sv_airaccelerate.Set(airAccel);
+        sv_autobunnyhopping.Set(defaultStyle.AutoBhop);
+        sv_enablebunnyhopping.Set(defaultStyle.AllowBunnyhopping);
+        sv_accelerate.Set(defaultStyle.Accelerate);
+        sv_friction.Set(defaultStyle.Friction);
+        sv_air_max_wishspeed.Set(defaultStyle.WishSpeed);
+
+        // Reset the cache so the next OnProcessMovementPre re-applies per-player.
+        _lastStyleIndex  = -1;
+        _lastInStartZone = false;
     }
 
     private ECommandAction OnCommandReloadStyles(StringCommand arg)
