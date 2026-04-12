@@ -49,6 +49,10 @@ internal interface IMapInfoModule
 
     float GetGameModeExitSpeedLimit();
 
+    float GetStageEnterSpeedLimit(int track);
+
+    float? GetStageExitSpeedOverride(int track);
+
     float GetDefaultAirAccelerate();
 
     MapProfile GetCurrentMapProfile();
@@ -680,6 +684,28 @@ internal class MapInfoModule : IModule, IMapInfoModule, IGameListener
 
     public float GetGameModeExitSpeedLimit()
         => _currentGameModeConfig.ExitSpeedLimit;
+
+    public float GetStageEnterSpeedLimit(int track)
+    {
+        if (_currentMapConfig != null
+            && _currentMapConfig.ZoneConfigs.TryGetValue(track, out var zone)
+            && zone.StageZone is { EnterSpeedLimit: { } stageEnterLimit })
+        {
+            return stageEnterLimit;
+        }
+        return GetEnterSpeedLimit(track);
+    }
+
+    public float? GetStageExitSpeedOverride(int track)
+    {
+        if (_currentMapConfig != null
+            && _currentMapConfig.ZoneConfigs.TryGetValue(track, out var zone)
+            && zone.StageZone is { } stageZone)
+        {
+            return stageZone.ExitSpeedLimit;
+        }
+        return GetZoneExitSpeedOverride(track);
+    }
 
     public float GetDefaultAirAccelerate()
         => _currentGameModeConfig.AirAccelerate;

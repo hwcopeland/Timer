@@ -62,6 +62,7 @@ internal class ReplayPlaybackModule : IReplayPlaybackModule,
     private readonly Dictionary<(int style, int track, int stage), ReplayContent> _stageReplayCache = [];
 
     // Bot management
+    private readonly bool                _hasNoBotParam;
     private readonly List<ReplayBotData> _replayBots = [];
     private readonly ReplayBotData?[]    _replayBotBySlot;
     private readonly ReplayBotConfig[]   _replayBotConfigs;
@@ -103,6 +104,8 @@ internal class ReplayPlaybackModule : IReplayPlaybackModule,
         _replayProviderProxy = replayProviderProxy;
         _playerManager       = playerManager;
         _logger              = logger;
+
+        _hasNoBotParam = bridge.ModSharp.HasCommandLine("-nobots");
 
         _replayListenerHub = new ListenerHub<IReplayModuleListener>(logger);
 
@@ -188,11 +191,21 @@ internal class ReplayPlaybackModule : IReplayPlaybackModule,
 
         // ReSharper restore InconsistentNaming
 
+        if (_hasNoBotParam)
+        {
+            _logger.LogWarning("Startup param \"-nobots\" detected, bots won't be added");
+
+            return;
+        }
+
         _bridge.ModSharp.RepeatCallThisMap(3.0f, Timer_CheckReplayBot);
     }
 
     public void OnMapRecordsLoaded()
     {
+        if (_hasNoBotParam)
+            return;
+
         var linkedToken = CancellationTokenSource.CreateLinkedTokenSource(_bridge.CancellationToken, _mapRecordLoadToken.Token);
 
         Task.Run(async () =>

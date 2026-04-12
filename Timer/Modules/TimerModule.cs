@@ -278,7 +278,7 @@ internal partial class TimerModule : ITimerModule, IModule, IZoneModuleListener,
                 // to avoid ruining a full run when passing through a stage zone
                 if (!timerInfo.IsTimerRunning())
                 {
-                    var enterLimit = _mapInfoModule.GetEnterSpeedLimit(info.Track);
+                    var enterLimit = _mapInfoModule.GetStageEnterSpeedLimit(info.Track);
 
                     if (enterLimit > 0.0f)
                     {
@@ -461,7 +461,7 @@ internal partial class TimerModule : ITimerModule, IModule, IZoneModuleListener,
                 if (!timerInfo.IsTimerRunning())
                 {
                     var style = _styleModule.GetStyleSetting(timerInfo.Style);
-                    var exitLimit = GetEffectiveExitSpeedLimit(info.Track, style);
+                    var exitLimit = GetEffectiveStageExitSpeedLimit(info.Track, style);
 
                     if (exitLimit > 0.0f)
                     {
@@ -743,6 +743,21 @@ internal partial class TimerModule : ITimerModule, IModule, IZoneModuleListener,
         if (_mapInfoModule.GetZoneExitSpeedOverride(track) is { } zoneOverride)
         {
             return zoneOverride;
+        }
+
+        if (style.CustomPreSpeed)
+        {
+            return style.PreSpeed;
+        }
+
+        return _mapInfoModule.GetGameModeExitSpeedLimit();
+    }
+
+    private float GetEffectiveStageExitSpeedLimit(int track, StyleSetting style)
+    {
+        if (_mapInfoModule.GetStageExitSpeedOverride(track) is { } stageOverride)
+        {
+            return stageOverride;
         }
 
         if (style.CustomPreSpeed)

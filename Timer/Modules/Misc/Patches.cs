@@ -13,26 +13,28 @@ internal partial class MiscModule
 
         // 1. Resolve CCSGameConfiguration::AddModGameSystem address and extract the absolute address of g_fGameOver
 
-        var CCSGameConfiguration_AddModGameSystem
-            = server.FindFunction(["CSGOVScriptGameSystem", "NavGameSystem", "BotGameSystem"]);
-
-        if (CCSGameConfiguration_AddModGameSystem == nint.Zero)
-        {
-            _logger.LogWarning("Failed to get address for CCSGameConfiguration::AddModGameSystem");
-
-            return;
-        }
-
-        if (!server.GetFunctionRange(CCSGameConfiguration_AddModGameSystem, out _, out var end))
-        {
-            _logger.LogWarning("Failed to get function range for CCSGameConfiguration::AddModGameSystem");
-
-            return;
-        }
-
         var g_fGameOverAddress = nint.Zero;
+        var end                = nint.Zero;
 
+        try
         {
+            var CCSGameConfiguration_AddModGameSystem
+                = server.FindFunction(["CSGOVScriptGameSystem", "NavGameSystem", "BotGameSystem"]);
+
+            if (CCSGameConfiguration_AddModGameSystem == nint.Zero)
+            {
+                _logger.LogWarning("Failed to get address for CCSGameConfiguration::AddModGameSystem");
+
+                return;
+            }
+
+            if (!server.GetFunctionRange(CCSGameConfiguration_AddModGameSystem, out _, out end))
+            {
+                _logger.LogWarning("Failed to get function range for CCSGameConfiguration::AddModGameSystem");
+
+                return;
+            }
+
             var addModFuncLength = (uint) (end - CCSGameConfiguration_AddModGameSystem);
             var addModReader     = new UnsafeCodeReader(CCSGameConfiguration_AddModGameSystem, addModFuncLength);
 
@@ -62,13 +64,85 @@ internal partial class MiscModule
 
             if (g_fGameOverAddress == nint.Zero)
             {
-                _logger.LogWarning("Failed to find g_fGameOver address in CCSGameConfiguration::AddModGameSystem");
+                _logger.LogWarning("Failed to find g_fGameOver address in CCSGameConfiguration::AddModGameSystem, trying method #2");
+            }
+        }
+        catch (Exception e)
+        {
+            _logger.LogWarning(e, "Error when trying to get address for g_fGameOver, trying method #2");
+        }
+
+        // resolve CCSGameRules::GoToIntermission
+        if (g_fGameOverAddress == nint.Zero)
+        {
+            try
+            {
+                var mp_chattime = _bridge.ConVarManager.FindConVar("mp_chattime", true)
+                                  ?? throw new Exception("Failed to find cvar mp_chattime");
+
+                var mp_chattimePtr = server.FindPtr(mp_chattime.GetAbsPtr());
+
+                if (mp_chattimePtr == nint.Zero)
+                    throw new Exception("No pointer(mp_chattime) was found");
+
+                var referencedFunction = server.FindFunction(mp_chattimePtr);
+
+                if (referencedFunction == nint.Zero)
+                    throw new Exception("Failed to find any function that references mp_chattime");
+
+                if (!server.GetFunctionRange(referencedFunction, out var funcStart, out var funcEnd))
+                    throw new Exception("Failed to get function range");
+
+                var length     = (uint) (funcEnd - funcStart);
+                var codeReader = new UnsafeCodeReader(funcStart, length);
+
+                var intermissionDecoder = Decoder.Create(64, codeReader, (ulong) funcStart, DecoderOptions.AMD);
+
+                while (codeReader.CanReadByte)
+                {
+                    var instr = intermissionDecoder.Decode();
+
+                    if (instr.IsInvalid)
+                    {
+                        continue;
+                    }
+
+                    if (instr.Code == Code.Cmp_rm8_imm8
+                        && instr.IsIPRelativeMemoryOperand
+                        && instr.GetImmediate(1) == 0)
+                    {
+                        g_fGameOverAddress = (nint) instr.IPRelativeMemoryAddress;
+
+                        break;
+                    }
+
+                    // mov byte ptr [rip+disp], 1
+                    if (instr.Code == Code.Mov_rm8_imm8
+                        && instr.IsIPRelativeMemoryOperand
+                        && instr.GetImmediate(1) == 1)
+                    {
+                        g_fGameOverAddress = (nint) instr.IPRelativeMemoryAddress;
+
+                        break;
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Method #2 failed, stop patching NavCheck in CCSBotManager::BotAddCommand");
 
                 return;
             }
-
-            _logger.LogInformation("Found g_fGameOver at 0x{Address:X}", g_fGameOverAddress);
         }
+
+        if (g_fGameOverAddress == nint.Zero)
+        {
+            _logger.LogError("Tried two methods to get address for g_fGameOver but all failed, stop patching NavCheck in CCSBotManager::BotAddCommand");
+
+            return;
+        }
+
+        _logger.LogInformation("Found g_fGameOver at 0x{Address:X}", g_fGameOverAddress);
 
         // 2. Decode CCSBotManager::BotAddCommand
 
@@ -126,8 +200,7 @@ internal partial class MiscModule
             }
 
             // Step 2: Find the instruction referencing g_fGameOver as the landing point
-            else if (instr.Op0Kind                           == OpKind.Memory
-                     && instr.MemoryBase                     == Register.RIP
+            else if (instr.IsIPRelativeMemoryOperand
                      && (nint) instr.IPRelativeMemoryAddress == g_fGameOverAddress)
             {
                 patchTarget = instr.IP;
@@ -141,9 +214,16 @@ internal partial class MiscModule
             }
         }
 
-        if (firstJz is not { } jzInstr || patchTarget == 0)
+        if (firstJz is not { } jzInstr)
         {
-            _logger.LogWarning("Failed to find nav check pattern in CCSBotManager::BotAddCommand");
+            _logger.LogError("Failed to find first jz instruction that matches our requirement, stop patching NavCheck in CCSBotManager::BotAddCommand");
+
+            return;
+        }
+
+        if (patchTarget == 0)
+        {
+            _logger.LogWarning("Failed to find patch target in CCSBotManager::BotAddCommand, stop patching NavCheck in CCSBotManager::BotAddCommand");
 
             return;
         }

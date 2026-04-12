@@ -1,0 +1,42 @@
+// Example map config file.
+// Rename this file to {mapname}.json to apply it to a specific map.
+// For example: bhop_badges.json
+//
+// All fields are optional. Omit or set to null to use the default values.
+// Speed limits: null = use default, 0 or negative = unlimited.
+{
+    // Console commands to execute when this map is loaded.
+    "cmds": [
+        // "sv_airaccelerate 150"
+    ],
+
+    // Per-track zone configs. Key is the track index (0 = main track).
+    "zones": {
+        "0": {
+            // Speed cap when entering the start zone (kills momentum from flying in).
+            // Default: 260 (surf & bhop).
+            "enter_speed_limit": null,
+
+            // Speed cap when leaving the start zone (pre-speed limit).
+            // Default: 375 (surf), 290 (bhop).
+            "exit_speed_limit": null,
+
+            // Maximum number of pre-jumps allowed in the start zone.
+            // Default: game mode default.
+            "max_jumps": null,
+
+            // Stage zone overrides — only applies to stage zones on this track.
+            // When set, stage zone enter/exit use these values instead of the track defaults.
+            // This is useful for bhop maps where you want unlimited speed through stage zones.
+            "stage_zone": {
+                // Speed cap when entering a stage zone.
+                // Set to 0 for unlimited (allow bhop through stages).
+                "enter_speed_limit": 0,
+
+                // Speed cap when leaving a stage zone.
+                // Set to 0 for unlimited.
+                "exit_speed_limit": 0
+            }
+        }
+    }
+}

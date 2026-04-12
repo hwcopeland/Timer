@@ -35,4 +35,11 @@ internal record ZoneConfig
 
     [JsonPropertyName("max_jumps")]
     public int? MaxJumps { get; set; } = null;
+
+    /// <summary>
+    /// Optional overrides for stage zones on this track.
+    /// When set, stage zone enter/exit speed limits use these values instead of the track defaults.
+    /// </summary>
+    [JsonPropertyName("stage_zone")]
+    public ZoneConfig? StageZone { get; set; } = null;
 }
