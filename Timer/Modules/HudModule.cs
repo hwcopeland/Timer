@@ -262,12 +262,12 @@ internal class HudModule : IModule, IHudModule, ITimerModuleListener, IZoneModul
             {
                 if (delta >= 0f)
                 {
-                    sb.Append(" <span color='#FF4444'>(WR +");
+                    sb.Append(" <span color='#FF4444'>(SR +");
                     Utils.FormatTime(ref sb, delta, true);
                 }
                 else
                 {
-                    sb.Append(" <span color='#44FF44'>(WR -");
+                    sb.Append(" <span color='#44FF44'>(SR -");
                     Utils.FormatTime(ref sb, MathF.Abs(delta), true);
                 }
 
@@ -296,7 +296,7 @@ internal class HudModule : IModule, IHudModule, ITimerModuleListener, IZoneModul
                 sb.Append("N/A");
             }
 
-            sb.Append(" ‖ WR: ");
+            sb.Append(" ‖ SR: ");
 
             if (_recordModule.GetWRTime(timerInfo.Style, timerInfo.Track) is { } wr)
             {

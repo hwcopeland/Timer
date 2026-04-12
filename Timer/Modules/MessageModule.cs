@@ -121,7 +121,7 @@ internal class MessageModule : IModule, IMessageModule, IRecordModuleListener, I
                 var wrCpTime = wrCheckpoints[checkpoint - 1].Time;
                 var delta    = timerInfo.Time - wrCpTime;
 
-                sb.Append(" | WR ");
+                sb.Append(" | SR ");
 
                 if (delta >= 0f)
                 {
@@ -202,7 +202,7 @@ internal class MessageModule : IModule, IMessageModule, IRecordModuleListener, I
             sb.Append(ChatColor.LightGreen);
             sb.Append(playerName);
             sb.Append(ChatColor.White);
-            sb.Append(" WR ");
+            sb.Append(" SR ");
             AppendRecordScope(ref sb, savedRecord);
             sb.Append(": ");
             sb.Append(ChatColor.LightGreen);

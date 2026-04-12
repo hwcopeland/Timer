@@ -55,7 +55,7 @@ internal partial class RecordModule
 
         if (wr is null)
         {
-            controller.PrintToChat($"No WR found for stage {stage}.");
+            controller.PrintToChat($"No SR found for stage {stage}.");
             return ECommandAction.Handled;
         }
 
@@ -64,7 +64,7 @@ internal partial class RecordModule
         {
             sb.Append("Stage ");
             sb.Append(stage);
-            sb.Append(" WR: ");
+            sb.Append(" SR: ");
             sb.Append(ChatColor.LightGreen);
             Utils.FormatTime(ref sb, wr.Time, true);
             sb.Append(ChatColor.White);
@@ -165,7 +165,7 @@ internal partial class RecordModule
 
         if (wr is null)
         {
-            controller.PrintToChat($"No WR found for bonus {bonus}.");
+            controller.PrintToChat($"No SR found for bonus {bonus}.");
             return ECommandAction.Handled;
         }
 
@@ -174,7 +174,7 @@ internal partial class RecordModule
         {
             sb.Append("Bonus ");
             sb.Append(bonus);
-            sb.Append(" WR: ");
+            sb.Append(" SR: ");
             sb.Append(ChatColor.LightGreen);
             Utils.FormatTime(ref sb, wr.Time, true);
             sb.Append(ChatColor.White);
@@ -298,7 +298,7 @@ internal partial class RecordModule
             if (wr is not null)
             {
                 var delta = pb.Time - wr.Time;
-                sb.Append(" (WR ");
+                sb.Append(" (SR ");
                 if (delta >= 0f)
                 {
                     sb.Append(ChatColor.Red);
@@ -350,14 +350,14 @@ internal partial class RecordModule
 
         if (wr is null)
         {
-            controller.PrintToChat($"No WR found for this track.");
+            controller.PrintToChat($"No SR found for this track.");
             return ECommandAction.Handled;
         }
 
         var sb = ZString.CreateStringBuilder(true);
         try
         {
-            sb.Append("WR: ");
+            sb.Append("SR: ");
             sb.Append(ChatColor.LightGreen);
             Utils.FormatTime(ref sb, wr.Time, true);
             sb.Append(ChatColor.White);
@@ -533,7 +533,7 @@ internal partial class RecordModule
 
         if (wrCheckpoints is not { Count: > 0 })
         {
-            controller.PrintToChat("No WR checkpoints available.");
+            controller.PrintToChat("No SR checkpoints available.");
             return ECommandAction.Handled;
         }
 
@@ -557,7 +557,7 @@ internal partial class RecordModule
 
                     var count = Math.Min(pbCheckpoints.Count, wrCheckpoints.Count);
 
-                    controller.PrintToChat("PB vs WR checkpoints:");
+                    controller.PrintToChat("PB vs SR checkpoints:");
 
                     for (var i = 0; i < count; i++)
                     {
@@ -574,7 +574,7 @@ internal partial class RecordModule
                             sb.Append(ChatColor.LightGreen);
                             Utils.FormatTime(ref sb, pbCp.Time, true);
                             sb.Append(ChatColor.White);
-                            sb.Append(" | WR ");
+                            sb.Append(" | SR ");
 
                             if (delta >= 0f)
                             {
@@ -611,7 +611,7 @@ internal partial class RecordModule
                             sb2.Append(ChatColor.LightGreen);
                             Utils.FormatTime(ref sb2, pb.Time, true);
                             sb2.Append(ChatColor.White);
-                            sb2.Append(" | WR ");
+                            sb2.Append(" | SR ");
 
                             if (finalDelta >= 0f)
                             {

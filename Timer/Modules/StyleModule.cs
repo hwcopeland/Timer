@@ -217,7 +217,9 @@ internal class StyleModule : IModule, IStyleModule, IGameListener, ITimerModuleL
         {
             var airAccel = style.CustomAirAccelerate ? style.AirAccelerate : _mapInfoModule.GetDefaultAirAccelerate();
             sv_airaccelerate.Set(airAccel);
-            sv_autobunnyhopping.Set(!inStartZone && style.AutoBhop);
+            // Upstream forces autobhop off in the start zone; surf servers here want
+            // bhop enabled everywhere per the style setting.
+            sv_autobunnyhopping.Set(style.AutoBhop);
             sv_accelerate.Set(style.Accelerate);
             sv_friction.Set(style.Friction);
             sv_air_max_wishspeed.Set(style.WishSpeed);
@@ -297,7 +299,14 @@ internal class StyleModule : IModule, IStyleModule, IGameListener, ITimerModuleL
             return;
         }
 
-        sv_autobunnyhopping.ReplicateToClient(client, false.ToString());
+        // Upstream forces autobhop off on start-zone entry; surf servers here
+        // want the style's autobhop setting to apply everywhere. Keep client
+        // state in sync with the current style instead.
+        if (_timerModule.GetTimerInfo(slot) is { } startInfo)
+        {
+            var style = _styles[startInfo.Style];
+            sv_autobunnyhopping.ReplicateToClient(client, style.AutoBhop.ToString());
+        }
     }
 
     public void OnZoneEndTouch(IZoneInfo zoneInfo, IPlayerController controller, IPlayerPawn pawn)

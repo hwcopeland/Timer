@@ -422,7 +422,7 @@ internal class MapInfoModule : IModule, IMapInfoModule, IGameListener
             var wr    = _recordModule.GetWR(0, 0);
             var total = _recordModule.GetTotalRecordCount(0, 0);
 
-            sb.Append("WR: ");
+            sb.Append("SR: ");
 
             if (wr is not null)
             {
