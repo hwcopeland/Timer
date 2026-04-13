@@ -73,25 +73,12 @@ internal partial class TimerModule
         var forwardmove = info->ForwardMove;
         var sidemove    = info->SideMove;
 
-        var inMainStartZone  = timerInfo.InZone  == EZoneType.Start;
-        var inStageStartZone = stageTimer.InZone == EZoneType.Stage;
-
-        if (!onGround && inMainStartZone)
-        {
-            var maxJumps = _mapInfoModule.GetMaxPrejumps(timerInfo.Track);
-
-            // Only apply prejump limiter in main start zone — stage zones
-            // should allow bhopping so players keep momentum through stages.
-            if (timerInfo.WasOnGround
-                && timerInfo.OnGroundTick <= 10
-                && timerInfo.Jumps        >= maxJumps)
-            {
-                timerInfo.Jumps    = 0;
-                arg.Velocity      = new ();
-                info->ForwardMove = 0;
-                info->SideMove    = 0;
-            }
-        }
+        // Prejump limiter disabled for this server — upstream zeroes player
+        // velocity in the main start zone once Jumps >= map.MaxPrejumps, which
+        // kills bhop at spawn. We want free bhop in stage 1, so the entire
+        // block is gone. Restore `timerInfo.InZone == EZoneType.Start` + the
+        // velocity/forwardmove/sidemove zeroing if prejump policy is ever
+        // wanted back.
 
         UpdateTimerState(timerInfo);
         UpdateTimerState(stageTimer);
