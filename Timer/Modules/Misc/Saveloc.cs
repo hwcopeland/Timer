@@ -33,6 +33,15 @@ internal unsafe partial class MiscModule
         _commandManager.AddClientChatCommand("clearcp", OnCommandClearCp);
     }
 
+    private void SavelocReply(PlayerSlot slot, string msg)
+    {
+        if (_bridge.ClientManager.GetGameClient(slot) is { } client
+            && client.GetPlayerController() is { } controller)
+        {
+            controller.PrintToChat(msg);
+        }
+    }
+
     private ECommandAction OnCommandSave(PlayerSlot slot, StringCommand command)
     {
         if (_bridge.EntityManager.FindPlayerPawnBySlot(slot) is not { } basePawn
@@ -41,16 +50,12 @@ internal unsafe partial class MiscModule
             return ECommandAction.Handled;
         }
 
-        var origin  = pawn.GetAbsOrigin();
-        var angles  = pawn.GetEyeAngles();
+        var origin   = pawn.GetAbsOrigin();
+        var angles   = pawn.GetEyeAngles();
         var velocity = pawn.GetAbsVelocity();
 
         _savedPositions[(byte)slot] = new SavedPosition(origin, angles, velocity);
-
-        if (pawn.GetPlayerController() is { } controller)
-        {
-            controller.PrintToChat("[surf] Position saved.");
-        }
+        SavelocReply(slot, "[surf] Position saved.");
 
         return ECommandAction.Handled;
     }
@@ -66,8 +71,7 @@ internal unsafe partial class MiscModule
         var saved = _savedPositions[(byte)slot];
         if (saved is null)
         {
-            if (pawn.GetPlayerController() is { } ctrl)
-                ctrl.PrintToChat("[surf] No saved position. Use !save first.");
+            SavelocReply(slot, "[surf] No saved position. Use !save first.");
             return ECommandAction.Handled;
         }
 
@@ -80,18 +84,7 @@ internal unsafe partial class MiscModule
     private ECommandAction OnCommandClearCp(PlayerSlot slot, StringCommand command)
     {
         _savedPositions[(byte)slot] = null;
-
-        if (_bridge.EntityManager.FindPlayerPawnBySlot(slot) is not { } basePawn
-            || basePawn.AsPlayer() is not { IsAlive: true } pawn)
-        {
-            return ECommandAction.Handled;
-        }
-
-        if (pawn.GetPlayerController() is { } controller)
-        {
-            controller.PrintToChat("[surf] Saved position cleared.");
-        }
-
+        SavelocReply(slot, "[surf] Saved position cleared.");
         return ECommandAction.Handled;
     }
 }
