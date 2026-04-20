@@ -225,18 +225,7 @@ internal class MessageModule : IModule, IMessageModule, IRecordModuleListener, I
             if (!isStageRecord)
             {
                 var sound = SrSoundFiles[Random.Shared.Next(SrSoundFiles.Length)];
-                for (byte slot = 0; slot < 64; slot++)
-                {
-                    if (_bridge.ClientManager.GetGameClient(new PlayerSlot(slot)) is { IsFakeClient: false } client
-                        && client.GetPlayerController() is { } ctrl)
-                    {
-                        try
-                        {
-                            ctrl.ExecuteClientCommand($"play sounds/surf/{sound}");
-                        }
-                        catch { }
-                    }
-                }
+                _bridge.ModSharp.ServerCommand($"play sounds/surf/{sound}");
             }
         }
         finally
