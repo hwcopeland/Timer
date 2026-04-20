@@ -221,12 +221,15 @@ internal class MessageModule : IModule, IMessageModule, IRecordModuleListener, I
 
             _bridge.ModSharp.PrintToChatWithPrefix(sb.ToString());
 
-            // Play a random UT announcer sound to all players on main SR.
-            if (!isStageRecord)
-            {
-                var sound = SrSoundFiles[Random.Shared.Next(SrSoundFiles.Length)];
-                _bridge.ModSharp.ServerCommand($"play sounds/surf/{sound}");
-            }
+            // SR sound disabled — ServerCommand("play ...") crashes CS2
+            // because "play" is a client command, not server. Need to use
+            // ModSharp's ISoundManager or per-client command dispatch.
+            // TODO: re-enable once the right API is found.
+            // if (!isStageRecord)
+            // {
+            //     var sound = SrSoundFiles[Random.Shared.Next(SrSoundFiles.Length)];
+            //     ...play sound to all clients...
+            // }
         }
         finally
         {

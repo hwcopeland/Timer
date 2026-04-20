@@ -43,7 +43,7 @@ internal partial class RecordModule
         var style     = timerInfo?.Style ?? 0;
         var track     = timerInfo?.Track ?? 0;
 
-        var stage = command.TryGet<byte>(1) is { } s ? (int)s : 0;
+        var stage = command.ArgCount > 0 && command.TryGet<byte>(1) is { } s ? (int)s : 0;
 
         if (stage < 1)
         {
@@ -94,7 +94,7 @@ internal partial class RecordModule
         var timerInfo = _timerModule.GetTimerInfo(slot);
         var style     = timerInfo?.Style ?? 0;
 
-        var bonus = command.TryGet<byte>(1) is { } b ? (int)b : 1;
+        var bonus = command.ArgCount > 0 && command.TryGet<byte>(1) is { } b ? (int)b : 1;
 
         if (bonus < 1)
         {
@@ -153,7 +153,7 @@ internal partial class RecordModule
         var timerInfo = _timerModule.GetTimerInfo(slot);
         var style     = timerInfo?.Style ?? 0;
 
-        var bonus = command.TryGet<byte>(1) is { } b ? (int)b : 1;
+        var bonus = command.ArgCount > 0 && command.TryGet<byte>(1) is { } b ? (int)b : 1;
 
         if (bonus < 1)
         {
@@ -204,7 +204,7 @@ internal partial class RecordModule
         var timerInfo = _timerModule.GetTimerInfo(slot);
         var style     = timerInfo?.Style ?? 0;
 
-        var bonus = command.TryGet<byte>(1) is { } b ? (int)b : 1;
+        var bonus = command.ArgCount > 0 && command.TryGet<byte>(1) is { } b ? (int)b : 1;
 
         if (bonus < 1)
         {
@@ -267,7 +267,7 @@ internal partial class RecordModule
         var style     = timerInfo?.Style ?? 0;
         var track     = timerInfo?.Track ?? 0;
 
-        var stage = command.TryGet<byte>(1) is { } s ? (int)s : 0;
+        var stage = command.ArgCount > 0 && command.TryGet<byte>(1) is { } s ? (int)s : 0;
 
         if (stage < 1)
         {
