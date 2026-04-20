@@ -221,15 +221,21 @@ internal class MessageModule : IModule, IMessageModule, IRecordModuleListener, I
 
             _bridge.ModSharp.PrintToChatWithPrefix(sb.ToString());
 
-            // SR sound disabled — ServerCommand("play ...") crashes CS2
-            // because "play" is a client command, not server. Need to use
-            // ModSharp's ISoundManager or per-client command dispatch.
-            // TODO: re-enable once the right API is found.
-            // if (!isStageRecord)
-            // {
-            //     var sound = SrSoundFiles[Random.Shared.Next(SrSoundFiles.Length)];
-            //     ...play sound to all clients...
-            // }
+            // Play a random UT announcer sound on main SR via per-client
+            // ExecuteStringCommand. "play" is a CLIENT command (not server)
+            // so it must be dispatched to each connected client individually.
+            if (!isStageRecord)
+            {
+                var sound = SrSoundFiles[Random.Shared.Next(SrSoundFiles.Length)];
+                for (byte slot = 0; slot < 64; slot++)
+                {
+                    if (_bridge.ClientManager.GetGameClient(new PlayerSlot(slot)) is { IsFakeClient: false, IsConnected: true } client)
+                    {
+                        try { client.ExecuteStringCommand($"play sounds/surf/{sound}"); }
+                        catch { }
+                    }
+                }
+            }
         }
         finally
         {
