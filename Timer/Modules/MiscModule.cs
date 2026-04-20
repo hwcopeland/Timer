@@ -65,6 +65,9 @@ internal unsafe partial class MiscModule : IModule, IMiscModule, IGameListener
 
     private readonly ITimerModule _timerModule;
 
+    // Late-resolved to avoid circular DI (RecordModule depends on other modules)
+    private IRecordModule _recordModule = null!;
+
     public MiscModule(InterfaceBridge     bridge,
                       ICommandManager     commandManager,
                       IInlineHookManager  inlineHookManager,
@@ -113,6 +116,8 @@ internal unsafe partial class MiscModule : IModule, IMiscModule, IGameListener
 
     public void OnPostInit(ServiceProvider provider)
     {
+        _recordModule = provider.GetRequiredService<IRecordModule>();
+
         try
         {
             PatchTheNavCheck();
@@ -152,14 +157,41 @@ internal unsafe partial class MiscModule : IModule, IMiscModule, IGameListener
 
         if (timer_remove_weapons_on_spawn.GetBool())
         {
+            var client = @params.Client;
+
             pawn.RemoveAllItems(true);
-            // Give back the knife on the next frame — CS2 needs a frame
+            // Give back items on the next frame — CS2 needs a frame
             // to process RemoveAllItems before accepting new items.
             _bridge.ModSharp.InvokeFrameAction(() =>
             {
-                if (pawn.IsAlive)
+                if (!pawn.IsAlive)
                 {
-                    pawn.GiveNamedItem("weapon_knife");
+                    return;
+                }
+
+                // Everyone gets a knife
+                pawn.GiveNamedItem("weapon_knife");
+
+                // Skip loadout rewards for bots
+                if (client.IsFakeClient)
+                {
+                    return;
+                }
+
+                // Map completers get a pistol (USP-S)
+                var pb = _recordModule.GetPlayerRecord(client.Slot, style: 0, track: 0);
+
+                if (pb is not null)
+                {
+                    pawn.GiveNamedItem(EconItemId.UspSilencer);
+
+                    // SR holder also gets a scout (SSG 08)
+                    var sr = _recordModule.GetWR(style: 0, track: 0);
+
+                    if (sr is not null && sr.SteamId == client.SteamId.AsPrimitive())
+                    {
+                        pawn.GiveNamedItem("weapon_ssg08");
+                    }
                 }
             });
         }
