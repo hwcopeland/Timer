@@ -124,18 +124,21 @@ internal partial class RecordModule : IModule, IGameListener, IRecordModule, ITi
 
         _commandManager.AddServerCommand("timer_recalc_scores", OnCommandRecalcScores);
 
-        _commandManager.AddClientChatCommand("wr",      OnCommandWR);
-        _commandManager.AddClientChatCommand("pb",      OnCommandPB);
-        _commandManager.AddClientChatCommand("rank",    OnCommandRank);
-        _commandManager.AddClientChatCommand("top",     OnCommandTop);
-        _commandManager.AddClientChatCommand("recent",  OnCommandRecent);
+        _commandManager.AddClientChatCommand("sr",       OnCommandWR);
+        _commandManager.AddClientChatCommand("wr",       OnCommandWR);  // alias
+        _commandManager.AddClientChatCommand("pb",       OnCommandPB);
+        _commandManager.AddClientChatCommand("rank",     OnCommandRank);
+        _commandManager.AddClientChatCommand("top",      OnCommandTop);
+        _commandManager.AddClientChatCommand("recent",   OnCommandRecent);
         _commandManager.AddClientChatCommand("cpr",      OnCommandCpr);
-        _commandManager.AddClientChatCommand("profile", OnCommandProfile);
-        _commandManager.AddClientChatCommand("stats",   OnCommandProfile);
-        _commandManager.AddClientChatCommand("swr",      OnCommandStageWR);
-        _commandManager.AddClientChatCommand("stagewr",  OnCommandStageWR);
+        _commandManager.AddClientChatCommand("profile",  OnCommandProfile);
+        _commandManager.AddClientChatCommand("stats",    OnCommandProfile);
+        _commandManager.AddClientChatCommand("ssr",      OnCommandStageWR);
+        _commandManager.AddClientChatCommand("swr",      OnCommandStageWR);  // alias
+        _commandManager.AddClientChatCommand("stagewr",  OnCommandStageWR);  // alias
         _commandManager.AddClientChatCommand("btop",     OnCommandBonusTop);
-        _commandManager.AddClientChatCommand("bwr",      OnCommandBonusWR);
+        _commandManager.AddClientChatCommand("bsr",      OnCommandBonusWR);
+        _commandManager.AddClientChatCommand("bwr",      OnCommandBonusWR);  // alias
         _commandManager.AddClientChatCommand("bpb",      OnCommandBonusPB);
         _commandManager.AddClientChatCommand("spb",      OnCommandStagePB);
 

@@ -56,7 +56,8 @@ internal unsafe partial class MiscModule
         var velocity = pawn.GetAbsVelocity();
 
         _savedPositions[(byte)slot] = new SavedPosition(origin, angles, velocity);
-        SavelocReply(slot, "[surf] Position saved.");
+        _timerModule.StopTimer(slot);
+        SavelocReply(slot, "[surf] Position saved. Timer stopped.");
 
         return ECommandAction.Handled;
     }
@@ -76,6 +77,7 @@ internal unsafe partial class MiscModule
             return ECommandAction.Handled;
         }
 
+        _timerModule.StopTimer(slot);
         var pos = saved.Value;
         pawn.Teleport(pos.Origin, pos.Angles, pos.Velocity);
 
