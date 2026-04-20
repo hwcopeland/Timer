@@ -189,8 +189,13 @@ internal class MessageModule : IModule, IMessageModule, IRecordModuleListener, I
         }
     }
 
+    // Sound paths match the Kandru cs2-quake-sounds-resources compiled path.
     private static readonly string[] SrSoundFiles =
-        ["wickedsick", "dominating", "holyshit", "combowhore", "godlike"];
+        ["cs2/quakesounds/default/wickedsick",
+         "cs2/quakesounds/default/dominating",
+         "cs2/quakesounds/default/holyshit",
+         "cs2/quakesounds/default/combowhore",
+         "cs2/quakesounds/default/godlike"];
 
     private void PrintNewServerRecordMessage(string    playerName,
                                              RunRecord savedRecord,
@@ -231,7 +236,7 @@ internal class MessageModule : IModule, IMessageModule, IRecordModuleListener, I
                 {
                     if (_bridge.ClientManager.GetGameClient(new PlayerSlot(slot)) is { IsFakeClient: false, IsConnected: true } client)
                     {
-                        try { client.ExecuteStringCommand($"play sounds/surf/{sound}"); }
+                        try { client.ExecuteStringCommand($"play {sound}"); }
                         catch { }
                     }
                 }
