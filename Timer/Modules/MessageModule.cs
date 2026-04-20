@@ -189,12 +189,14 @@ internal class MessageModule : IModule, IMessageModule, IRecordModuleListener, I
         }
     }
 
+    private static readonly string[] SrSoundFiles =
+        ["wickedsick", "dominating", "holyshit", "combowhore", "godlike"];
+
     private void PrintNewServerRecordMessage(string    playerName,
                                              RunRecord savedRecord,
                                              RunRecord? wrRecord,
                                              bool      isStageRecord)
     {
-        _ = isStageRecord;
 
         var sb = ZString.CreateStringBuilder(true);
         try
@@ -218,6 +220,24 @@ internal class MessageModule : IModule, IMessageModule, IRecordModuleListener, I
             }
 
             _bridge.ModSharp.PrintToChatWithPrefix(sb.ToString());
+
+            // Play a random UT announcer sound to all players on main SR.
+            if (!isStageRecord)
+            {
+                var sound = SrSoundFiles[Random.Shared.Next(SrSoundFiles.Length)];
+                for (byte slot = 0; slot < 64; slot++)
+                {
+                    if (_bridge.ClientManager.GetGameClient(new PlayerSlot(slot)) is { IsFakeClient: false } client
+                        && client.GetPlayerController() is { } ctrl)
+                    {
+                        try
+                        {
+                            ctrl.ExecuteClientCommand($"play sounds/surf/{sound}");
+                        }
+                        catch { }
+                    }
+                }
+            }
         }
         finally
         {
