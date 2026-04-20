@@ -95,6 +95,7 @@ internal unsafe partial class MiscModule : IModule, IMiscModule, IGameListener
     public bool Init()
     {
         AddCommands();
+        AddSavelocCommands();
 
         _bridge.ModSharp.InstallGameListener(this);
 
