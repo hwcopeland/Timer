@@ -148,6 +148,10 @@ internal unsafe partial class MiscModule : IModule, IMiscModule, IGameListener
         if (timer_remove_weapons_on_spawn.GetBool())
         {
             pawn.RemoveAllItems(true);
+            // Give back the knife — surf servers strip guns to prevent
+            // shooting but players should still have a knife for movement
+            // feel and skin display.
+            pawn.GiveNamedItem("weapon_knife");
         }
     }
 
