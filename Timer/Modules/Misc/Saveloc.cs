@@ -12,6 +12,7 @@
 using Sharp.Shared.Enums;
 using Sharp.Shared.Types;
 using Sharp.Shared.Units;
+using Source2Surf.Timer.Extensions;
 
 // ReSharper disable CheckNamespace
 namespace Source2Surf.Timer.Modules;
