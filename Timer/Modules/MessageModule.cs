@@ -226,19 +226,18 @@ internal class MessageModule : IModule, IMessageModule, IRecordModuleListener, I
 
             _bridge.ModSharp.PrintToChatWithPrefix(sb.ToString());
 
-            // SR sound DISABLED — ExecuteStringCommand may crash on ag2
-            // ModSharp with the Apr 21 CS2 update (vtable offsets changed).
-            // Re-enable when git-119 ships.
-            // if (!isStageRecord)
-            // {
-            //     var sound = SrSoundFiles[Random.Shared.Next(SrSoundFiles.Length)];
-            //     for (byte slot = 0; slot < 64; slot++)
-            //     {
-            //         if (_bridge.ClientManager.GetGameClient(new PlayerSlot(slot)) is { IsFakeClient: false, IsConnected: true } client)
-            //             client.ExecuteStringCommand($"play {sound}");
-            //     }
-            if (false) // placeholder to keep scope
+            // Play a random UT announcer sound on main SR.
+            if (!isStageRecord)
             {
+                var sound = SrSoundFiles[Random.Shared.Next(SrSoundFiles.Length)];
+                for (byte slot = 0; slot < 64; slot++)
+                {
+                    if (_bridge.ClientManager.GetGameClient(new PlayerSlot(slot)) is { IsFakeClient: false, IsConnected: true } client)
+                    {
+                        try { client.ExecuteStringCommand($"play {sound}"); }
+                        catch { }
+                    }
+                }
             }
         }
         finally
