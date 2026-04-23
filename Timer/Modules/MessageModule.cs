@@ -227,7 +227,7 @@ internal class MessageModule : IModule, IMessageModule, IRecordModuleListener, I
             _bridge.ModSharp.PrintToChatWithPrefix(sb.ToString());
 
             // Play a random UT announcer sound on main SR.
-            if (!isStageRecord)
+            if (false) // DISABLED — crashes server
             {
                 var sound = SrSoundFiles[Random.Shared.Next(SrSoundFiles.Length)];
                 for (byte slot = 0; slot < 64; slot++)

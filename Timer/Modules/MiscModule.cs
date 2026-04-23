@@ -155,7 +155,7 @@ internal unsafe partial class MiscModule : IModule, IMiscModule, IGameListener
 
         ApplyUnclampedEncoder(pawn);
 
-        if (timer_remove_weapons_on_spawn.GetBool())
+        if (false) // DISABLED — GiveNamedItem crashes
         {
             var client = @params.Client;
 
