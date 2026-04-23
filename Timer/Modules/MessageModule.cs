@@ -19,6 +19,7 @@ using System;
 using Cysharp.Text;
 using Sharp.Shared.Definition;
 using Sharp.Shared.GameEntities;
+using Sharp.Shared.Listeners;
 using Sharp.Shared.Units;
 using Source2Surf.Timer.Extensions;
 using Source2Surf.Timer.Shared.Events;
@@ -33,8 +34,11 @@ internal interface IMessageModule
 {
 }
 
-internal class MessageModule : IModule, IMessageModule, IRecordModuleListener, ITimerModuleListener
+internal class MessageModule : IModule, IMessageModule, IRecordModuleListener, ITimerModuleListener, IGameListener
 {
+    public int ListenerVersion  => IGameListener.ApiVersion;
+    public int ListenerPriority => 0;
+
     private readonly InterfaceBridge _bridge;
     private readonly IRecordModule   _recordModule;
     private readonly ITimerModule    _timerModule;
@@ -52,6 +56,7 @@ internal class MessageModule : IModule, IMessageModule, IRecordModuleListener, I
     {
         _recordModule.RegisterListener(this);
         _timerModule.RegisterListener(this);
+        _bridge.ModSharp.InstallGameListener(this);
 
         return true;
     }
@@ -60,6 +65,15 @@ internal class MessageModule : IModule, IMessageModule, IRecordModuleListener, I
     {
         _recordModule.UnregisterListener(this);
         _timerModule.UnregisterListener(this);
+        _bridge.ModSharp.RemoveGameListener(this);
+    }
+
+    public void OnResourcePrecache()
+    {
+        // Precache Kandru quake sound event manifests so EmitSound() can
+        // resolve custom event names like QuakeSoundsD.Godlike.
+        _bridge.ModSharp.PrecacheResource("soundevents/soundevents_quakesounds.vsndevts");
+        _bridge.ModSharp.PrecacheResource("soundevents/soundevents_addon.vsndevts");
     }
 
     public void OnRecordSaved(PlayerRecordSavedEvent recordEvent)
@@ -189,13 +203,13 @@ internal class MessageModule : IModule, IMessageModule, IRecordModuleListener, I
         }
     }
 
-    // Sound paths match the Kandru cs2-quake-sounds-resources compiled path.
-    private static readonly string[] SrSoundFiles =
-        ["cs2/quakesounds/default/wickedsick",
-         "cs2/quakesounds/default/dominating",
-         "cs2/quakesounds/default/holyshit",
-         "cs2/quakesounds/default/combowhore",
-         "cs2/quakesounds/default/godlike"];
+    // Kandru quake sound event names (must be precached via OnResourcePrecache).
+    private static readonly string[] SrSoundEvents =
+        ["QuakeSoundsD.Wickedsick",
+         "QuakeSoundsD.Dominating",
+         "QuakeSoundsD.Holyshit",
+         "QuakeSoundsD.Combowhore",
+         "QuakeSoundsD.Godlike"];
 
     private void PrintNewServerRecordMessage(string    playerName,
                                              RunRecord savedRecord,
@@ -226,15 +240,15 @@ internal class MessageModule : IModule, IMessageModule, IRecordModuleListener, I
 
             _bridge.ModSharp.PrintToChatWithPrefix(sb.ToString());
 
-            // Play a random UT announcer sound on main SR.
-            if (false) // DISABLED — crashes server
+            // Play a random UT announcer sound on main SR via EmitSound.
+            if (!isStageRecord)
             {
-                var sound = SrSoundFiles[Random.Shared.Next(SrSoundFiles.Length)];
+                var eventName = SrSoundEvents[Random.Shared.Next(SrSoundEvents.Length)];
                 for (byte slot = 0; slot < 64; slot++)
                 {
                     if (_bridge.ClientManager.GetGameClient(new PlayerSlot(slot)) is { IsFakeClient: false, IsConnected: true } client)
                     {
-                        try { client.ExecuteStringCommand($"play {sound}"); }
+                        try { client.GetPlayerController()?.GetPlayerPawn()?.EmitSound(eventName); }
                         catch { }
                     }
                 }
