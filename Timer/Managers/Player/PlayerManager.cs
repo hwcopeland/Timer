@@ -83,8 +83,20 @@ internal class PlayerManager : IManager, IPlayerManager, IClientListener
         _listenerHub     = new ListenerHub<IPlayerManagerListener>(logger);
     }
 
+    // SourceTV (`tv_enable 1`) connects an internal proxy client to the
+    // dedicated server with IsHltv=true and SteamId=0. The proxy is not
+    // an IsFakeClient (that's bots) so older guards let it through and
+    // it cascaded into every PlayerManager listener (ReplayRecorderModule,
+    // etc.) which then SIGSEGV'd CS2 in native code during ModSharp
+    // bootstrap. Bail out for any non-playing slot at the manager level
+    // so no downstream module ever sees the GOTV proxy.
+    private static bool IsNonPlayingClient(IGameClient client) =>
+        client.IsFakeClient || client.IsHltv || (ulong) client.SteamId == 0;
+
     public void OnClientConnected(IGameClient client)
     {
+        if (IsNonPlayingClient(client)) return;
+
         var slot = (int) client.Slot;
 
         // Clean up old data if slot is occupied
@@ -105,6 +117,8 @@ internal class PlayerManager : IManager, IPlayerManager, IClientListener
 
     public void OnClientPutInServer(IGameClient client)
     {
+        if (IsNonPlayingClient(client)) return;
+
         foreach (var listener in _listenerHub.Snapshot)
         {
             try
@@ -127,7 +141,7 @@ internal class PlayerManager : IManager, IPlayerManager, IClientListener
 
     public void OnClientPostAdminCheck(IGameClient client)
     {
-        if (client.IsFakeClient)
+        if (IsNonPlayingClient(client))
         {
             return;
         }
@@ -223,6 +237,8 @@ internal class PlayerManager : IManager, IPlayerManager, IClientListener
 
     public void OnClientDisconnected(IGameClient client, NetworkDisconnectionReason reason)
     {
+        if (IsNonPlayingClient(client)) return;
+
         var slot = (int) client.Slot;
 
         foreach (var listener in _listenerHub.Snapshot)
