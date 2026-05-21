@@ -83,19 +83,21 @@ internal class PlayerManager : IManager, IPlayerManager, IClientListener
         _listenerHub     = new ListenerHub<IPlayerManagerListener>(logger);
     }
 
-    // SourceTV (`tv_enable 1`) connects an internal proxy client to the
-    // dedicated server with IsHltv=true and SteamId=0. The proxy is not
-    // an IsFakeClient (that's bots) so older guards let it through and
-    // it cascaded into every PlayerManager listener (ReplayRecorderModule,
-    // etc.) which then SIGSEGV'd CS2 in native code during ModSharp
-    // bootstrap. Bail out for any non-playing slot at the manager level
-    // so no downstream module ever sees the GOTV proxy.
-    private static bool IsNonPlayingClient(IGameClient client) =>
-        client.IsFakeClient || client.IsHltv || (ulong) client.SteamId == 0;
+    // SourceTV (`tv_enable 1`) connects an internal proxy client with
+    // IsHltv=true that ModSharp's modules can't handle — propagating it to
+    // the listener hub SIGSEGV'd CS2 in native code during bootstrap.
+    //
+    // IMPORTANT: filter ONLY the HLTV proxy here. Real bots (IsFakeClient,
+    // SteamId=0) MUST still propagate — ReplayPlaybackModule relies on a
+    // bot's OnClientPutInServer event to adopt it as the replay ghost and
+    // register it in _replayBots. Filtering IsFakeClient/SteamId==0 here
+    // orphaned every spawned bot, so Timer_CheckReplayBot kept seeing an
+    // empty _replayBots and spawned a new bot every 3s — an unbounded flood.
+    private static bool IsHltvProxy(IGameClient client) => client.IsHltv;
 
     public void OnClientConnected(IGameClient client)
     {
-        if (IsNonPlayingClient(client)) return;
+        if (IsHltvProxy(client)) return;
 
         var slot = (int) client.Slot;
 
@@ -117,7 +119,7 @@ internal class PlayerManager : IManager, IPlayerManager, IClientListener
 
     public void OnClientPutInServer(IGameClient client)
     {
-        if (IsNonPlayingClient(client)) return;
+        if (IsHltvProxy(client)) return;
 
         foreach (var listener in _listenerHub.Snapshot)
         {
@@ -141,7 +143,9 @@ internal class PlayerManager : IManager, IPlayerManager, IClientListener
 
     public void OnClientPostAdminCheck(IGameClient client)
     {
-        if (IsNonPlayingClient(client))
+        // Bots and the HLTV proxy both skip admin/profile loading — they
+        // have no real SteamID so the mismatch branch would kick them.
+        if (client.IsFakeClient || client.IsHltv)
         {
             return;
         }
@@ -237,7 +241,7 @@ internal class PlayerManager : IManager, IPlayerManager, IClientListener
 
     public void OnClientDisconnected(IGameClient client, NetworkDisconnectionReason reason)
     {
-        if (IsNonPlayingClient(client)) return;
+        if (IsHltvProxy(client)) return;
 
         var slot = (int) client.Slot;
 
