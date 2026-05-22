@@ -29,6 +29,7 @@ using Source2Surf.Timer.Managers.Patch;
 using Source2Surf.Timer.Native;
 using Source2Surf.Timer.Shared.Interfaces;
 using Source2Surf.Timer.Shared.Interfaces.Modules;
+using Sharp.Shared.Units;
 
 namespace Source2Surf.Timer.Modules;
 
@@ -67,6 +68,12 @@ internal unsafe partial class MiscModule : IModule, IMiscModule, IGameListener
 
     // Late-resolved to avoid circular DI (RecordModule depends on other modules)
     private IRecordModule _recordModule = null!;
+
+    // CS2 fires OnPlayerSpawnPost more than once per spawn (team join +
+    // actual spawn). Each fire queued its own next-frame give-action, so
+    // the player ended up with 2x knife / USP / scout. This per-slot flag
+    // ensures only one loadout give-action is in flight per spawn.
+    private readonly bool[] _loadoutPending = new bool[PlayerSlot.MaxPlayerCount];
 
     public MiscModule(InterfaceBridge     bridge,
                       ICommandManager     commandManager,
@@ -158,12 +165,26 @@ internal unsafe partial class MiscModule : IModule, IMiscModule, IGameListener
         if (timer_remove_weapons_on_spawn.GetBool())
         {
             var client = @params.Client;
+            var slot   = (int) client.Slot;
 
             pawn.RemoveAllItems(true);
+
+            // Dedupe: CS2 fires this event multiple times per spawn. Without
+            // the guard each fire queues its own give-action and they all run
+            // on the next frame, double-/triple-stacking the loadout.
+            if (_loadoutPending[slot])
+            {
+                return;
+            }
+
+            _loadoutPending[slot] = true;
+
             // Give back items on the next frame — CS2 needs a frame
             // to process RemoveAllItems before accepting new items.
             _bridge.ModSharp.InvokeFrameAction(() =>
             {
+                _loadoutPending[slot] = false;
+
                 if (!pawn.IsAlive)
                 {
                     return;
